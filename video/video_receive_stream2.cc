@@ -334,9 +334,9 @@ void VideoReceiveStream2::Start() {
     return;
   }
 
-  const bool protected_by_fec =
-      config_.rtp.protected_by_flexfec ||
-      rtp_video_stream_receiver_.ulpfec_payload_type() != -1;
+  frame_buffer_->StartOnWorker();
+  const bool protected_by_fec = config_.rtp.protected_by_flexfec ||
+                                rtp_video_stream_receiver_.IsUlpfecEnabled();
 
   if (config_.rtp.nack.rtp_history_ms > 0 && protected_by_fec) {
     buffer_->SetProtectionMode(kProtectionNackFEC);

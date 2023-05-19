@@ -23,6 +23,11 @@ NS_ASSUME_NONNULL_BEGIN
 @class RTC_OBJC_TYPE(RTCVideoSource);
 @class RTC_OBJC_TYPE(RTCVideoTrack);
 @class RTC_OBJC_TYPE(RTCPeerConnectionFactoryOptions);
+@class RTC_OBJC_TYPE(RTCAudioDeviceModule);
+@class RTC_OBJC_TYPE(RTCRtpCapabilities);
+
+typedef NS_ENUM(NSInteger, RTCRtpMediaType);
+
 @protocol RTC_OBJC_TYPE
 (RTCPeerConnectionDelegate);
 @protocol RTC_OBJC_TYPE
@@ -45,11 +50,18 @@ RTC_OBJC_EXPORT
     initWithEncoderFactory:(nullable id<RTC_OBJC_TYPE(RTCVideoEncoderFactory)>)encoderFactory
             decoderFactory:(nullable id<RTC_OBJC_TYPE(RTCVideoDecoderFactory)>)decoderFactory;
 
-/* Initialize object with injectable video encoder/decoder factories and injectable ADM */
+/* Initialize object with bypass voice processing */
 - (instancetype)
-    initWithEncoderFactory:(nullable id<RTC_OBJC_TYPE(RTCVideoEncoderFactory)>)encoderFactory
-            decoderFactory:(nullable id<RTC_OBJC_TYPE(RTCVideoDecoderFactory)>)decoderFactory
-               audioDevice:(nullable id<RTC_OBJC_TYPE(RTCAudioDevice)>)audioDevice;
+    initWithBypassVoiceProcessing:(BOOL)bypassVoiceProcessing
+                   encoderFactory:(nullable id<RTC_OBJC_TYPE(RTCVideoEncoderFactory)>)encoderFactory
+                   decoderFactory:
+                       (nullable id<RTC_OBJC_TYPE(RTCVideoDecoderFactory)>)decoderFactory;
+
+@property(nonatomic, readonly) RTCAudioDeviceModule *audioDeviceModule;
+
+- (RTC_OBJC_TYPE(RTCRtpCapabilities) *)rtpSenderCapabilitiesFor:(RTCRtpMediaType)mediaType;
+
+- (RTC_OBJC_TYPE(RTCRtpCapabilities) *)rtpReceiverCapabilitiesFor:(RTCRtpMediaType)mediaType;
 
 /** Initialize an RTCAudioSource with constraints. */
 - (RTC_OBJC_TYPE(RTCAudioSource) *)audioSourceWithConstraints:

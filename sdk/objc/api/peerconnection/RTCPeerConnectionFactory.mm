@@ -14,6 +14,9 @@
 #import "RTCPeerConnectionFactory+Private.h"
 #import "RTCPeerConnectionFactoryOptions+Private.h"
 
+#import "RTCAudioDeviceModule.h"
+#import "RTCAudioDeviceModule+Private.h"
+
 #import "RTCAudioSource+Private.h"
 #import "RTCAudioTrack+Private.h"
 #import "RTCMediaConstraints+Private.h"
@@ -21,6 +24,9 @@
 #import "RTCPeerConnection+Private.h"
 #import "RTCVideoSource+Private.h"
 #import "RTCVideoTrack+Private.h"
+#import "RTCRtpReceiver+Private.h"
+#import "RTCRtpCapabilities+Private.h"
+#import "RTCRtpCodecCapability+Private.h"
 #import "base/RTCLogging.h"
 #import "base/RTCVideoDecoderFactory.h"
 #import "base/RTCVideoEncoderFactory.h"
@@ -55,18 +61,13 @@
   std::unique_ptr<rtc::Thread> _networkThread;
   std::unique_ptr<rtc::Thread> _workerThread;
   std::unique_ptr<rtc::Thread> _signalingThread;
+  rtc::scoped_refptr<webrtc::AudioDeviceModule> _nativeAudioDeviceModule;
+
   BOOL _hasStartedAecDump;
 }
 
 @synthesize nativeFactory = _nativeFactory;
-
-- (rtc::scoped_refptr<webrtc::AudioDeviceModule>)audioDeviceModule {
-#if defined(WEBRTC_IOS)
-  return webrtc::CreateAudioDeviceModule();
-#else
-  return nullptr;
-#endif
-}
+@synthesize audioDeviceModule = _audioDeviceModule;
 
 - (instancetype)init {
   return [self
@@ -161,14 +162,16 @@
                             (std::unique_ptr<webrtc::VideoDecoderFactory>)videoDecoderFactory
                                 audioDeviceModule:(webrtc::AudioDeviceModule *)audioDeviceModule
                             audioProcessingModule:
-                                (rtc::scoped_refptr<webrtc::AudioProcessing>)audioProcessingModule {
+                                (rtc::scoped_refptr<webrtc::AudioProcessing>)audioProcessingModule
+                            bypassVoiceProcessing:(BOOL)bypassVoiceProcessing {
   return [self initWithNativeAudioEncoderFactory:audioEncoderFactory
                        nativeAudioDecoderFactory:audioDecoderFactory
                        nativeVideoEncoderFactory:std::move(videoEncoderFactory)
                        nativeVideoDecoderFactory:std::move(videoDecoderFactory)
                                audioDeviceModule:audioDeviceModule
                            audioProcessingModule:audioProcessingModule
-                        networkControllerFactory:nullptr];
+                        networkControllerFactory:nullptr
+                           bypassVoiceProcessing:NO];
 }
 - (instancetype)initWithNativeAudioEncoderFactory:
                     (rtc::scoped_refptr<webrtc::AudioEncoderFactory>)audioEncoderFactory
@@ -183,7 +186,8 @@
                                 (rtc::scoped_refptr<webrtc::AudioProcessing>)audioProcessingModule
                          networkControllerFactory:
                              (std::unique_ptr<webrtc::NetworkControllerFactoryInterface>)
-                                 networkControllerFactory {
+                                 networkControllerFactory
+                            bypassVoiceProcessing:(BOOL)bypassVoiceProcessing {
   if (self = [self initNative]) {
     webrtc::PeerConnectionFactoryDependencies dependencies;
     dependencies.network_thread = _networkThread.get();
@@ -196,7 +200,18 @@
     dependencies.task_queue_factory =
         webrtc::CreateDefaultTaskQueueFactory(dependencies.trials.get());
     cricket::MediaEngineDependencies media_deps;
-    media_deps.adm = std::move(audioDeviceModule);
+
+    // always create ADM on worker thread
+    _nativeAudioDeviceModule = _workerThread->Invoke<rtc::scoped_refptr<webrtc::AudioDeviceModule>>(RTC_FROM_HERE, [&dependencies, &bypassVoiceProcessing]() {
+      return webrtc::AudioDeviceModule::Create(webrtc::AudioDeviceModule::AudioLayer::kPlatformDefaultAudio,
+                                               dependencies.task_queue_factory.get(),
+                                               bypassVoiceProcessing == YES);
+	  });
+
+    _audioDeviceModule = [[RTCAudioDeviceModule alloc] initWithNativeModule: _nativeAudioDeviceModule
+                                                       workerThread: _workerThread.get()];
+
+    media_deps.adm = _nativeAudioDeviceModule;
     media_deps.task_queue_factory = dependencies.task_queue_factory.get();
     media_deps.audio_encoder_factory = std::move(audioEncoderFactory);
     media_deps.audio_decoder_factory = std::move(audioDecoderFactory);
