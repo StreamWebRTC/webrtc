@@ -73,6 +73,8 @@ class AudioDeviceIOS : public AudioDeviceGeneric,
   int32_t StopRecording() override;
   bool Recording() const override;
 
+  int32_t SetAudioDeviceSink(AudioDeviceSink* sink) override { return -1; }
+
   // These methods returns hard-coded delay values and not dynamic delay
   // estimates. The reason is that iOS supports a built-in AEC and the WebRTC
   // AEC will always be disabled in the Libjingle layer to avoid running two
@@ -172,6 +174,8 @@ class AudioDeviceIOS : public AudioDeviceGeneric,
   void HandlePlayoutGlitchDetected();
   void HandleOutputVolumeChange();
 
+  bool RestartAudioUnit(bool enable_input);
+
   // Uses current `playout_parameters_` and `record_parameters_` to inform the
   // audio device buffer (ADB) about our internal audio parameters.
   void UpdateAudioDeviceBuffer();
@@ -200,7 +204,7 @@ class AudioDeviceIOS : public AudioDeviceGeneric,
 
   // Activates our audio session, creates and initializes the voice-processing
   // audio unit and verifies that we got the preferred native audio parameters.
-  bool InitPlayOrRecord();
+  bool InitPlayOrRecord(bool enable_input);
 
   // Closes and deletes the voice-processing I/O unit.
   void ShutdownPlayOrRecord();
@@ -260,18 +264,20 @@ class AudioDeviceIOS : public AudioDeviceGeneric,
   // will be changed dynamically to account for this behavior.
   rtc::BufferT<int16_t> record_audio_buffer_;
 
+  // Set to 1 when recording is initialized and 0 otherwise.
+  volatile int recording_is_initialized_;
+
   // Set to 1 when recording is active and 0 otherwise.
   std::atomic<int> recording_;
+
+  // Set to 1 when playout is initialized and 0 otherwise.
+  volatile int playout_is_initialized_;
 
   // Set to 1 when playout is active and 0 otherwise.
   std::atomic<int> playing_;
 
   // Set to true after successful call to Init(), false otherwise.
   bool initialized_ RTC_GUARDED_BY(thread_);
-
-  // Set to true after successful call to InitRecording() or InitPlayout(),
-  // false otherwise.
-  bool audio_is_initialized_;
 
   // Set to true if audio session is interrupted, false otherwise.
   bool is_interrupted_;

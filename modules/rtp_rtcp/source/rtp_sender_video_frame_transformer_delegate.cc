@@ -77,6 +77,9 @@ class TransformableVideoSenderFrame : public TransformableVideoFrameInterface {
     ssrc_ = metadata.GetSsrc();
     csrcs_ = metadata.GetCsrcs();
   }
+  const RTPVideoHeader& header() const override { return header_; }
+
+  const VideoFrameMetadata& GetMetadata() const override { return metadata_; }
 
   const RTPVideoHeader& GetHeader() const { return header_; }
   uint8_t GetPayloadType() const override { return payload_type_; }
@@ -143,8 +146,10 @@ bool RTPSenderVideoFrameTransformerDelegate::TransformFrame(
 void RTPSenderVideoFrameTransformerDelegate::OnTransformedFrame(
     std::unique_ptr<TransformableFrameInterface> frame) {
   MutexLock lock(&sender_lock_);
-
-  if (!sender_) {
+  // The encoder queue normally gets destroyed after the sender;
+  // however, it might still be null by the time a previously queued frame
+  // arrives.
+  if (!sender_ || !encoder_queue_)
     return;
   }
   rtc::scoped_refptr<RTPSenderVideoFrameTransformerDelegate> delegate(this);
