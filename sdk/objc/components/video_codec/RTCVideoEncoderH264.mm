@@ -361,7 +361,6 @@ NSUInteger GetMaxSampleRate(const webrtc::H264ProfileLevelId &profile_level_id) 
   int32_t _width;
   int32_t _height;
   VTCompressionSessionRef _compressionSession;
-  RTCVideoCodecMode _mode;
   CVPixelBufferPoolRef _pixelBufferPool;
   RTCVideoCodecMode _codecMode;
   unsigned int _maxQP;
