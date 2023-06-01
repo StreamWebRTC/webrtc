@@ -145,6 +145,21 @@ class TestAudioDeviceModuleImpl
   // Blocks forever until the Recorder stops producing data.
   void WaitForRecordingEnd() override {
     done_capturing_.Wait(rtc::Event::kForever);
+  int32_t SetAudioDeviceSink(AudioDeviceSink* sink) const override {
+    // no-op
+    return 0;
+  }
+
+  // Blocks until the Renderer refuses to receive data.
+  // Returns false if `timeout_ms` passes before that happens.
+  bool WaitForPlayoutEnd(int timeout_ms = rtc::Event::kForever) override {
+    return done_rendering_.Wait(timeout_ms);
+  }
+
+  // Blocks until the Recorder stops producing data.
+  // Returns false if `timeout_ms` passes before that happens.
+  bool WaitForRecordingEnd(int timeout_ms = rtc::Event::kForever) override {
+    return done_capturing_.Wait(timeout_ms);
   }
 
  private:

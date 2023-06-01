@@ -288,6 +288,10 @@ if (is_android) {
       "api/org/webrtc/RTCStatsCollectorCallback.java",
       "api/org/webrtc/RTCStatsReport.java",
       "api/org/webrtc/RtcCertificatePem.java",
+      "api/org/webrtc/FrameCryptor.java",
+      "api/org/webrtc/FrameCryptorAlgorithm.java",
+      "api/org/webrtc/FrameCryptorFactory.java",
+      "api/org/webrtc/FrameCryptorKeyProvider.java",
       "api/org/webrtc/RtpCapabilities.java",
       "api/org/webrtc/RtpParameters.java",
       "api/org/webrtc/RtpReceiver.java",
@@ -524,6 +528,8 @@ if (is_android) {
     sources = [
       "api/org/webrtc/SoftwareVideoDecoderFactory.java",
       "api/org/webrtc/SoftwareVideoEncoderFactory.java",
+      "api/org/webrtc/SimulcastVideoEncoder.java",
+      "api/org/webrtc/SimulcastVideoEncoderFactory.java",
     ]
 
     deps = [
@@ -717,6 +723,10 @@ if (current_os == "linux" || is_android) {
       "src/jni/pc/data_channel.cc",
       "src/jni/pc/data_channel.h",
       "src/jni/pc/dtmf_sender.cc",
+      "src/jni/pc/frame_cryptor.cc",
+      "src/jni/pc/frame_cryptor.h",
+      "src/jni/pc/frame_cryptor_key_provider.cc",
+      "src/jni/pc/frame_cryptor_key_provider.h",
       "src/jni/pc/ice_candidate.cc",
       "src/jni/pc/ice_candidate.h",
       "src/jni/pc/media_constraints.cc",
@@ -774,6 +784,7 @@ if (current_os == "linux" || is_android) {
       "../../api:rtp_parameters",
       "../../api:rtp_sender_interface",
       "../../api:turn_customizer",
+      "../../api/crypto:frame_crypto_transformer",
       "../../api/crypto:options",
       "../../api/rtc_event_log:rtc_event_log_factory",
       "../../api/task_queue:default_task_queue_factory",
@@ -888,6 +899,21 @@ if (current_os == "linux" || is_android) {
     ]
   }
 
+  rtc_library("simulcast_jni") {
+    visibility = [ "*" ]
+    allow_poison = [ "software_video_codecs" ]
+    sources = [
+      "src/jni/simulcast_video_encoder.cc",
+      "src/jni/simulcast_video_encoder.h"
+    ]
+    deps = [
+      ":base_jni",
+      ":video_jni",
+      ":native_api_codecs",
+      "../../media:rtc_simulcast_encoder_adapter"
+    ]
+  }
+
   rtc_library("swcodecs_jni") {
     visibility = [ "*" ]
     allow_poison = [ "software_video_codecs" ]
@@ -905,6 +931,7 @@ if (current_os == "linux" || is_android) {
       "../../api/video_codecs:builtin_video_decoder_factory",
       "../../api/video_codecs:builtin_video_encoder_factory",
       "../../api/video_codecs:video_codecs_api",
+      ":simulcast_jni",
     ]
   }
 
@@ -1383,6 +1410,9 @@ if (current_os == "linux" || is_android) {
       "api/org/webrtc/CryptoOptions.java",
       "api/org/webrtc/DataChannel.java",
       "api/org/webrtc/DtmfSender.java",
+      "api/org/webrtc/FrameCryptor.java",
+      "api/org/webrtc/FrameCryptorFactory.java",
+      "api/org/webrtc/FrameCryptorKeyProvider.java",
       "api/org/webrtc/IceCandidate.java",
       "api/org/webrtc/IceCandidateErrorEvent.java",
       "api/org/webrtc/MediaConstraints.java",

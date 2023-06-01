@@ -1005,6 +1005,13 @@ class VideoMediaReceiveChannelInterface : public MediaReceiveChannelInterface {
                                              bool nack_enabled,
                                              webrtc::RtcpMode rtcp_mode,
                                              absl::optional<int> rtx_time) = 0;
+  // Cause generation of a keyframe for `ssrc`
+  virtual void GenerateKeyFrame(uint32_t ssrc) = 0;
+
+  virtual std::vector<webrtc::RtpSource> GetSources(uint32_t ssrc) const = 0;
+
+  virtual void StartReceive(uint32_t ssrc) {}
+  virtual void StopReceive(uint32_t ssrc) {}
 };
 
 }  // namespace cricket
