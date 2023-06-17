@@ -18,11 +18,13 @@
 #include "absl/memory/memory.h"
 #include "absl/strings/string_view.h"
 #include "api/audio_codecs/builtin_audio_decoder_factory.h"
+#include "api/media_types.h"
 #include "api/rtc_event_log/rtc_event_log.h"
 #include "api/task_queue/default_task_queue_factory.h"
 #include "api/test/mock_audio_mixer.h"
 #include "api/test/video/function_video_encoder_factory.h"
 #include "api/transport/field_trial_based_config.h"
+#include "api/units/timestamp.h"
 #include "api/video/builtin_video_bitrate_allocator_factory.h"
 #include "audio/audio_receive_stream.h"
 #include "audio/audio_send_stream.h"
@@ -31,7 +33,6 @@
 #include "call/audio_state.h"
 #include "modules/audio_device/include/mock_audio_device.h"
 #include "modules/audio_processing/include/mock_audio_processing.h"
-#include "modules/include/module.h"
 #include "modules/rtp_rtcp/source/rtp_rtcp_interface.h"
 #include "test/fake_encoder.h"
 #include "test/gtest.h"
@@ -43,6 +44,7 @@ namespace {
 
 using ::testing::_;
 using ::testing::Contains;
+using ::testing::MockFunction;
 using ::testing::NiceMock;
 using ::testing::StrictMock;
 
@@ -324,6 +326,45 @@ TEST(CallTest, MultipleFlexfecReceiveStreamsProtectingSingleVideoStream) {
   }
 }
 
+TEST(CallTest,
+     DeliverRtpPacketOfTypeAudioTriggerOnUndemuxablePacketHandlerIfNotDemuxed) {
+  CallHelper call(/*use_null_audio_processing=*/false);
+  MockFunction<bool(const RtpPacketReceived& parsed_packet)>
+      un_demuxable_packet_handler;
+
+  RtpPacketReceived packet;
+  packet.set_arrival_time(Timestamp::Millis(1));
+  EXPECT_CALL(un_demuxable_packet_handler, Call);
+  call->Receiver()->DeliverRtpPacket(
+      MediaType::AUDIO, packet, un_demuxable_packet_handler.AsStdFunction());
+}
+
+TEST(CallTest,
+     DeliverRtpPacketOfTypeVideoTriggerOnUndemuxablePacketHandlerIfNotDemuxed) {
+  CallHelper call(/*use_null_audio_processing=*/false);
+  MockFunction<bool(const RtpPacketReceived& parsed_packet)>
+      un_demuxable_packet_handler;
+
+  RtpPacketReceived packet;
+  packet.set_arrival_time(Timestamp::Millis(1));
+  EXPECT_CALL(un_demuxable_packet_handler, Call);
+  call->Receiver()->DeliverRtpPacket(
+      MediaType::VIDEO, packet, un_demuxable_packet_handler.AsStdFunction());
+}
+
+TEST(CallTest,
+     DeliverRtpPacketOfTypeAnyDoesNotTriggerOnUndemuxablePacketHandler) {
+  CallHelper call(/*use_null_audio_processing=*/false);
+  MockFunction<bool(const RtpPacketReceived& parsed_packet)>
+      un_demuxable_packet_handler;
+
+  RtpPacketReceived packet;
+  packet.set_arrival_time(Timestamp::Millis(1));
+  EXPECT_CALL(un_demuxable_packet_handler, Call).Times(0);
+  call->Receiver()->DeliverRtpPacket(
+      MediaType::ANY, packet, un_demuxable_packet_handler.AsStdFunction());
+}
+
 TEST(CallTest, RecreatingAudioStreamWithSameSsrcReusesRtpState) {
   constexpr uint32_t kSSRC = 12345;
   for (bool use_null_audio_processing : {false, true}) {
@@ -346,9 +387,8 @@ TEST(CallTest, RecreatingAudioStreamWithSameSsrcReusesRtpState) {
     EXPECT_EQ(rtp_state1.sequence_number, rtp_state2.sequence_number);
     EXPECT_EQ(rtp_state1.start_timestamp, rtp_state2.start_timestamp);
     EXPECT_EQ(rtp_state1.timestamp, rtp_state2.timestamp);
-    EXPECT_EQ(rtp_state1.capture_time_ms, rtp_state2.capture_time_ms);
-    EXPECT_EQ(rtp_state1.last_timestamp_time_ms,
-              rtp_state2.last_timestamp_time_ms);
+    EXPECT_EQ(rtp_state1.capture_time, rtp_state2.capture_time);
+    EXPECT_EQ(rtp_state1.last_timestamp_time, rtp_state2.last_timestamp_time);
   }
 }
 
@@ -474,61 +514,6 @@ TEST(CallTest, AddAdaptationResourceBeforeCreatingVideoSendStream) {
   fake_resource->SetUsageState(ResourceUsageState::kUnderuse);
   call->DestroyVideoSendStream(stream1);
   call->DestroyVideoSendStream(stream2);
-}
-
-TEST(CallTest, SharedModuleThread) {
-  class SharedModuleThreadUser : public Module {
-   public:
-    SharedModuleThreadUser(ProcessThread* expected_thread,
-                           rtc::scoped_refptr<SharedModuleThread> thread)
-        : expected_thread_(expected_thread), thread_(std::move(thread)) {
-      thread_->EnsureStarted();
-      thread_->process_thread()->RegisterModule(this, RTC_FROM_HERE);
-    }
-
-    ~SharedModuleThreadUser() override {
-      thread_->process_thread()->DeRegisterModule(this);
-      EXPECT_TRUE(thread_was_checked_);
-    }
-
-   private:
-    int64_t TimeUntilNextProcess() override { return 1000; }
-    void Process() override {}
-    void ProcessThreadAttached(ProcessThread* process_thread) override {
-      if (!process_thread) {
-        // Being detached.
-        return;
-      }
-      EXPECT_EQ(process_thread, expected_thread_);
-      thread_was_checked_ = true;
-    }
-
-    bool thread_was_checked_ = false;
-    ProcessThread* const expected_thread_;
-    rtc::scoped_refptr<SharedModuleThread> thread_;
-  };
-
-  // Create our test instance and pass a lambda to it that gets executed when
-  // the reference count goes back to 1 - meaning `shared` again is the only
-  // reference, which means we can free the variable and deallocate the thread.
-  rtc::scoped_refptr<SharedModuleThread> shared;
-  shared =
-      SharedModuleThread::Create(ProcessThread::Create("MySharedProcessThread"),
-                                 [&shared]() { shared = nullptr; });
-  ProcessThread* process_thread = shared->process_thread();
-
-  ASSERT_TRUE(shared.get());
-
-  {
-    // Create a couple of users of the thread.
-    // These instances are in a separate scope to trigger the callback to our
-    // lambda, which will run when these go out of scope.
-    SharedModuleThreadUser user1(process_thread, shared);
-    SharedModuleThreadUser user2(process_thread, shared);
-  }
-
-  // The thread should now have been stopped and freed.
-  EXPECT_FALSE(shared);
 }
 
 }  // namespace webrtc

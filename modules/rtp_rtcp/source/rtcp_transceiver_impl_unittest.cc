@@ -23,12 +23,13 @@
 #include "api/units/timestamp.h"
 #include "api/video/video_bitrate_allocation.h"
 #include "modules/rtp_rtcp/include/receive_statistics.h"
+#include "modules/rtp_rtcp/include/report_block_data.h"
+#include "modules/rtp_rtcp/mocks/mock_network_link_rtcp_observer.h"
 #include "modules/rtp_rtcp/mocks/mock_rtcp_rtt_stats.h"
 #include "modules/rtp_rtcp/source/rtcp_packet/app.h"
 #include "modules/rtp_rtcp/source/rtcp_packet/bye.h"
 #include "modules/rtp_rtcp/source/rtcp_packet/compound_packet.h"
 #include "modules/rtp_rtcp/source/time_util.h"
-#include "rtc_base/task_utils/to_queued_task.h"
 #include "system_wrappers/include/clock.h"
 #include "test/gmock.h"
 #include "test/gtest.h"
@@ -43,6 +44,7 @@ using ::testing::ElementsAre;
 using ::testing::ElementsAreArray;
 using ::testing::Ge;
 using ::testing::NiceMock;
+using ::testing::Property;
 using ::testing::Return;
 using ::testing::SizeIs;
 using ::testing::StrictMock;
@@ -89,34 +91,10 @@ class MockRtpStreamRtcpHandler : public RtpStreamRtcpHandler {
               (override));
   MOCK_METHOD(void, OnFir, (uint32_t), (override));
   MOCK_METHOD(void, OnPli, (uint32_t), (override));
-  MOCK_METHOD(void,
-              OnReportBlock,
-              (uint32_t, const rtcp::ReportBlock&),
-              (override));
+  MOCK_METHOD(void, OnReport, (const ReportBlockData&), (override));
 
  private:
   int num_calls_ = 0;
-};
-
-class MockNetworkLinkRtcpObserver : public NetworkLinkRtcpObserver {
- public:
-  MOCK_METHOD(void,
-              OnRttUpdate,
-              (Timestamp receive_time, TimeDelta rtt),
-              (override));
-  MOCK_METHOD(void,
-              OnTransportFeedback,
-              (Timestamp receive_time, const rtcp::TransportFeedback& feedback),
-              (override));
-  MOCK_METHOD(void,
-              OnReceiverEstimatedMaxBitrate,
-              (Timestamp receive_time, DataRate bitrate),
-              (override));
-  MOCK_METHOD(void,
-              OnReportBlocks,
-              (Timestamp receive_time,
-               rtc::ArrayView<const rtcp::ReportBlock> report_blocks),
-              (override));
 };
 
 constexpr TimeDelta kReportPeriod = TimeDelta::Seconds(1);
@@ -216,11 +194,11 @@ TEST_F(RtcpTransceiverImplTest, NeedToStopPeriodicTaskToDestroyOnTaskQueue) {
   EXPECT_TRUE(transport.WaitPacket());
 
   bool done = false;
-  queue->PostTask(ToQueuedTask([rtcp_transceiver, &done] {
+  queue->PostTask([rtcp_transceiver, &done] {
     rtcp_transceiver->StopPeriodicTask();
     delete rtcp_transceiver;
     done = true;
-  }));
+  });
   ASSERT_TRUE(time_controller().Wait([&] { return done; }, kAlmostForever));
 }
 
@@ -233,11 +211,11 @@ TEST_F(RtcpTransceiverImplTest, CanBeDestroyedRightAfterCreation) {
   config.outgoing_transport = &transport;
 
   bool done = false;
-  queue->PostTask(ToQueuedTask([&] {
+  queue->PostTask([&] {
     RtcpTransceiverImpl rtcp_transceiver(config);
     rtcp_transceiver.StopPeriodicTask();
     done = true;
-  }));
+  });
   ASSERT_TRUE(time_controller().Wait([&] { return done; }, kAlmostForever));
 }
 
@@ -268,18 +246,18 @@ TEST_F(RtcpTransceiverImplTest, DelaysSendingFirstCompondPacket) {
   absl::optional<RtcpTransceiverImpl> rtcp_transceiver;
 
   Timestamp started = CurrentTime();
-  queue->PostTask(ToQueuedTask([&] { rtcp_transceiver.emplace(config); }));
+  queue->PostTask([&] { rtcp_transceiver.emplace(config); });
   EXPECT_TRUE(transport.WaitPacket());
 
   EXPECT_GE(CurrentTime() - started, config.initial_report_delay);
 
   // Cleanup.
   bool done = false;
-  queue->PostTask(ToQueuedTask([&] {
+  queue->PostTask([&] {
     rtcp_transceiver->StopPeriodicTask();
     rtcp_transceiver.reset();
     done = true;
-  }));
+  });
   ASSERT_TRUE(time_controller().Wait([&] { return done; }, kAlmostForever));
 }
 
@@ -294,12 +272,12 @@ TEST_F(RtcpTransceiverImplTest, PeriodicallySendsPackets) {
   config.task_queue = queue.get();
   absl::optional<RtcpTransceiverImpl> rtcp_transceiver;
   Timestamp time_just_before_1st_packet = Timestamp::MinusInfinity();
-  queue->PostTask(ToQueuedTask([&] {
+  queue->PostTask([&] {
     // Because initial_report_delay_ms is set to 0, time_just_before_the_packet
     // should be very close to the time_of_the_packet.
     time_just_before_1st_packet = CurrentTime();
     rtcp_transceiver.emplace(config);
-  }));
+  });
 
   EXPECT_TRUE(transport.WaitPacket());
   EXPECT_TRUE(transport.WaitPacket());
@@ -310,11 +288,11 @@ TEST_F(RtcpTransceiverImplTest, PeriodicallySendsPackets) {
 
   // Cleanup.
   bool done = false;
-  queue->PostTask(ToQueuedTask([&] {
+  queue->PostTask([&] {
     rtcp_transceiver->StopPeriodicTask();
     rtcp_transceiver.reset();
     done = true;
-  }));
+  });
   ASSERT_TRUE(time_controller().Wait([&] { return done; }, kAlmostForever));
 }
 
@@ -328,19 +306,20 @@ TEST_F(RtcpTransceiverImplTest, SendCompoundPacketDelaysPeriodicSendPackets) {
   config.report_period = kReportPeriod;
   config.task_queue = queue.get();
   absl::optional<RtcpTransceiverImpl> rtcp_transceiver;
-  queue->PostTask(ToQueuedTask([&] { rtcp_transceiver.emplace(config); }));
+  queue->PostTask([&] { rtcp_transceiver.emplace(config); });
 
   // Wait for the first packet.
   EXPECT_TRUE(transport.WaitPacket());
   // Send non periodic one after half period.
   bool non_periodic = false;
   Timestamp time_of_non_periodic_packet = Timestamp::MinusInfinity();
-  queue->PostDelayedTask(ToQueuedTask([&] {
-                           time_of_non_periodic_packet = CurrentTime();
-                           rtcp_transceiver->SendCompoundPacket();
-                           non_periodic = true;
-                         }),
-                         (config.report_period / 2).ms());
+  queue->PostDelayedTask(
+      [&] {
+        time_of_non_periodic_packet = CurrentTime();
+        rtcp_transceiver->SendCompoundPacket();
+        non_periodic = true;
+      },
+      config.report_period / 2);
   // Though non-periodic packet is scheduled just in between periodic, due to
   // small period and task queue flakiness it migth end-up 1ms after next
   // periodic packet. To be sure duration after non-periodic packet is tested
@@ -356,11 +335,11 @@ TEST_F(RtcpTransceiverImplTest, SendCompoundPacketDelaysPeriodicSendPackets) {
 
   // Cleanup.
   bool done = false;
-  queue->PostTask(ToQueuedTask([&] {
+  queue->PostTask([&] {
     rtcp_transceiver->StopPeriodicTask();
     rtcp_transceiver.reset();
     done = true;
-  }));
+  });
   ASSERT_TRUE(time_controller().Wait([&] { return done; }, kAlmostForever));
 }
 
@@ -415,18 +394,17 @@ TEST_F(RtcpTransceiverImplTest, SendsPeriodicRtcpWhenNetworkStateIsUp) {
   absl::optional<RtcpTransceiverImpl> rtcp_transceiver;
   rtcp_transceiver.emplace(config);
 
-  queue->PostTask(
-      ToQueuedTask([&] { rtcp_transceiver->SetReadyToSend(true); }));
+  queue->PostTask([&] { rtcp_transceiver->SetReadyToSend(true); });
 
   EXPECT_TRUE(transport.WaitPacket());
 
   // Cleanup.
   bool done = false;
-  queue->PostTask(ToQueuedTask([&] {
+  queue->PostTask([&] {
     rtcp_transceiver->StopPeriodicTask();
     rtcp_transceiver.reset();
     done = true;
-  }));
+  });
   ASSERT_TRUE(time_controller().Wait([&] { return done; }, kAlmostForever));
 }
 
@@ -1473,9 +1451,9 @@ TEST_F(RtcpTransceiverImplTest, ParsesTransportFeedback) {
       }));
 
   rtcp::TransportFeedback tb;
-  tb.SetBase(/*base_sequence=*/321, /*ref_timestamp_us=*/15);
-  tb.AddReceivedPacket(/*base_sequence=*/321, /*timestamp_us=*/15);
-  tb.AddReceivedPacket(/*base_sequence=*/322, /*timestamp_us=*/17);
+  tb.SetBase(/*base_sequence=*/321, Timestamp::Micros(15));
+  tb.AddReceivedPacket(/*base_sequence=*/321, Timestamp::Micros(15));
+  tb.AddReceivedPacket(/*base_sequence=*/322, Timestamp::Micros(17));
   rtcp_transceiver.ReceivePacket(tb.Build(), receive_time);
 }
 
@@ -1516,7 +1494,7 @@ TEST_F(RtcpTransceiverImplTest,
   rr2->SetReportBlocks(std::vector<ReportBlock>(2));
   packet.Append(std::move(rr2));
 
-  EXPECT_CALL(link_observer, OnReportBlocks(receive_time, SizeIs(64)));
+  EXPECT_CALL(link_observer, OnReport(receive_time, SizeIs(64)));
 
   rtcp_transceiver.ReceivePacket(packet.Build(), receive_time);
 }
@@ -1542,9 +1520,11 @@ TEST_F(RtcpTransceiverImplTest,
   MockRtpStreamRtcpHandler local_stream1;
   MockRtpStreamRtcpHandler local_stream3;
   MockRtpStreamRtcpHandler local_stream4;
-  EXPECT_CALL(local_stream1, OnReportBlock(kRemoteSsrc, _));
-  EXPECT_CALL(local_stream3, OnReportBlock).Times(0);
-  EXPECT_CALL(local_stream4, OnReportBlock(kRemoteSsrc, _));
+  EXPECT_CALL(local_stream1,
+              OnReport(Property(&ReportBlockData::sender_ssrc, kRemoteSsrc)));
+  EXPECT_CALL(local_stream3, OnReport).Times(0);
+  EXPECT_CALL(local_stream4,
+              OnReport(Property(&ReportBlockData::sender_ssrc, kRemoteSsrc)));
 
   ASSERT_TRUE(rtcp_transceiver.AddMediaSender(kMediaSsrc1, &local_stream1));
   ASSERT_TRUE(rtcp_transceiver.AddMediaSender(kMediaSsrc3, &local_stream3));

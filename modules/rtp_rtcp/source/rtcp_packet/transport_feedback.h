@@ -11,10 +11,12 @@
 #ifndef MODULES_RTP_RTCP_SOURCE_RTCP_PACKET_TRANSPORT_FEEDBACK_H_
 #define MODULES_RTP_RTCP_SOURCE_RTCP_PACKET_TRANSPORT_FEEDBACK_H_
 
+#include <array>
 #include <memory>
 #include <vector>
 
 #include "absl/base/attributes.h"
+#include "api/function_view.h"
 #include "api/units/time_delta.h"
 #include "api/units/timestamp.h"
 #include "modules/rtp_rtcp/source/rtcp_packet/rtpfb.h"
@@ -23,38 +25,26 @@ namespace webrtc {
 namespace rtcp {
 class CommonHeader;
 
-// TODO(bugs.webrtc.org/13757): Uncomment ABSL_DEPRECATED attributes or delete
-// functions they are attached to when all usage within webrtc is updated.
 class TransportFeedback : public Rtpfb {
  public:
   class ReceivedPacket {
    public:
     ReceivedPacket(uint16_t sequence_number, int16_t delta_ticks)
-        : sequence_number_(sequence_number),
-          delta_ticks_(delta_ticks),
-          received_(true) {}
-    explicit ReceivedPacket(uint16_t sequence_number)
-        : sequence_number_(sequence_number), received_(false) {}
+        : sequence_number_(sequence_number), delta_ticks_(delta_ticks) {}
     ReceivedPacket(const ReceivedPacket&) = default;
     ReceivedPacket& operator=(const ReceivedPacket&) = default;
 
     uint16_t sequence_number() const { return sequence_number_; }
     int16_t delta_ticks() const { return delta_ticks_; }
-    // ABSL_DEPRECATED("Use delta() that returns TimeDelta")
-    int32_t delta_us() const { return delta().us(); }
     TimeDelta delta() const { return delta_ticks_ * kDeltaTick; }
-    bool received() const { return received_; }
 
    private:
     uint16_t sequence_number_;
     int16_t delta_ticks_;
-    bool received_;
   };
   // TODO(sprang): IANA reg?
   static constexpr uint8_t kFeedbackMessageType = 15;
   // Convert to multiples of 0.25ms.
-  // ABSL_DEPRECATED("Use kDeltaTick")
-  static constexpr int kDeltaScaleFactor = 250;
   static constexpr TimeDelta kDeltaTick = TimeDelta::Micros(250);
   // Maximum number of packets (including missing) TransportFeedback can report.
   static constexpr size_t kMaxReportedPackets = 0xffff;
@@ -63,30 +53,27 @@ class TransportFeedback : public Rtpfb {
 
   // If `include_timestamps` is set to false, the created packet will not
   // contain the receive delta block.
-  explicit TransportFeedback(bool include_timestamps,
-                             bool include_lost = false);
+  explicit TransportFeedback(bool include_timestamps);
   TransportFeedback(const TransportFeedback&);
   TransportFeedback(TransportFeedback&&);
 
   ~TransportFeedback() override;
 
-  // ABSL_DEPRECATED("Use version that takes Timestamp")
-  void SetBase(uint16_t base_sequence,      // Seq# of first packet in this msg.
-               int64_t ref_timestamp_us) {  // Reference timestamp for this msg.
-    SetBase(base_sequence, Timestamp::Micros(ref_timestamp_us));
-  }
   void SetBase(uint16_t base_sequence,    // Seq# of first packet in this msg.
                Timestamp ref_timestamp);  // Reference timestamp for this msg.
 
   void SetFeedbackSequenceNumber(uint8_t feedback_sequence);
   // NOTE: This method requires increasing sequence numbers (excepting wraps).
-  // ABSL_DEPRECATED("Use version that takes Timestamp")
-  bool AddReceivedPacket(uint16_t sequence_number, int64_t timestamp_us) {
-    return AddReceivedPacket(sequence_number, Timestamp::Micros(timestamp_us));
-  }
   bool AddReceivedPacket(uint16_t sequence_number, Timestamp timestamp);
   const std::vector<ReceivedPacket>& GetReceivedPackets() const;
-  const std::vector<ReceivedPacket>& GetAllPackets() const;
+
+  // Calls `handler` for all packets this feedback describes.
+  // For received packets pass receieve time as `delta_since_base` since the
+  // `BaseTime()`. For missed packets calls `handler` with `delta_since_base =
+  // PlusInfinity()`.
+  void ForAllPackets(
+      rtc::FunctionView<void(uint16_t sequence_number,
+                             TimeDelta delta_since_base)> handler) const;
 
   uint16_t GetBaseSequence() const;
 
@@ -94,17 +81,9 @@ class TransportFeedback : public Rtpfb {
   size_t GetPacketStatusCount() const { return num_seq_no_; }
 
   // Get the reference time including any precision loss.
-  // ABSL_DEPRECATED("Use BaseTime that returns Timestamp")
-  int64_t GetBaseTimeUs() const;
-  // ABSL_DEPRECATED("Use BaseTime that returns Timestamp")
-  TimeDelta GetBaseTime() const { return BaseTime() - Timestamp::Zero(); }
   Timestamp BaseTime() const;
 
-  // Get the unwrapped delta between current base time and `prev_timestamp_us`.
-  // ABSL_DEPRECATED("Use GetBaseDelta that takes Timestamp")
-  int64_t GetBaseDeltaUs(int64_t prev_timestamp_us) const;
-  // ABSL_DEPRECATED("Use GetBaseDelta that takes Timestamp")
-  TimeDelta GetBaseDelta(TimeDelta prev_timestamp) const;
+  // Get the unwrapped delta between current base time and `prev_timestamp`.
   TimeDelta GetBaseDelta(Timestamp prev_timestamp) const;
 
   // Does the feedback packet contain timestamp information?
@@ -133,6 +112,7 @@ class TransportFeedback : public Rtpfb {
   class LastChunk {
    public:
     using DeltaSize = TransportFeedback::DeltaSize;
+    static constexpr size_t kMaxRunLengthCapacity = 0x1fff;
 
     LastChunk();
 
@@ -143,6 +123,8 @@ class TransportFeedback : public Rtpfb {
     bool CanAdd(DeltaSize delta_size) const;
     // Add `delta_size`, assumes `CanAdd(delta_size)`,
     void Add(DeltaSize delta_size);
+    // Equivalent to calling Add(0) `num_missing` times. Assumes `Empty()`.
+    void AddMissingPackets(size_t num_missing);
 
     // Encode chunk as large as possible removing encoded delta sizes.
     // Assume CanAdd() == false for some valid delta_size.
@@ -156,7 +138,6 @@ class TransportFeedback : public Rtpfb {
     void AppendTo(std::vector<DeltaSize>* deltas) const;
 
    private:
-    static constexpr size_t kMaxRunLengthCapacity = 0x1fff;
     static constexpr size_t kMaxOneBitCapacity = 14;
     static constexpr size_t kMaxTwoBitCapacity = 7;
     static constexpr size_t kMaxVectorCapacity = kMaxOneBitCapacity;
@@ -171,7 +152,7 @@ class TransportFeedback : public Rtpfb {
     uint16_t EncodeRunLength() const;
     void DecodeRunLength(uint16_t chunk, size_t max_size);
 
-    DeltaSize delta_sizes_[kMaxVectorCapacity];
+    std::array<DeltaSize, kMaxVectorCapacity> delta_sizes_;
     size_t size_;
     bool all_same_;
     bool has_large_delta_;
@@ -181,8 +162,9 @@ class TransportFeedback : public Rtpfb {
   void Clear();
 
   bool AddDeltaSize(DeltaSize delta_size);
+  // Adds `num_missing_packets` deltas of size 0.
+  bool AddMissingPackets(size_t num_missing_packets);
 
-  const bool include_lost_;
   uint16_t base_seq_no_;
   uint16_t num_seq_no_;
   uint32_t base_time_ticks_;

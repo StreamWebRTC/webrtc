@@ -36,14 +36,16 @@ typedef NS_ENUM(NSInteger, RTCRtpMediaType);
 (RTCVideoEncoderFactory);
 @protocol RTC_OBJC_TYPE
 (RTCSSLCertificateVerifier);
+@protocol RTC_OBJC_TYPE
+(RTCAudioDevice);
 
 RTC_OBJC_EXPORT
 @interface RTC_OBJC_TYPE (RTCPeerConnectionFactory) : NSObject
 
-/* Initialize object with default H264 video encoder/decoder factories */
+/* Initialize object with default H264 video encoder/decoder factories and default ADM */
 - (instancetype)init;
 
-/* Initialize object with injectable video encoder/decoder factories */
+/* Initialize object with injectable video encoder/decoder factories and default ADM */
 - (instancetype)
     initWithEncoderFactory:(nullable id<RTC_OBJC_TYPE(RTCVideoEncoderFactory)>)encoderFactory
             decoderFactory:(nullable id<RTC_OBJC_TYPE(RTCVideoDecoderFactory)>)decoderFactory;

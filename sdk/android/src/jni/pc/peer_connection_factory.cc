@@ -44,6 +44,7 @@
 #include "sdk/android/src/jni/pc/media_stream_track.h"
 #include "sdk/android/src/jni/pc/owned_factory_and_threads.h"
 #include "sdk/android/src/jni/pc/peer_connection.h"
+#include "sdk/android/src/jni/pc/rtp_capabilities.h"
 #include "sdk/android/src/jni/pc/ssl_certificate_verifier_wrapper.h"
 #include "sdk/android/src/jni/pc/video.h"
 #include "system_wrappers/include/field_trial.h"
@@ -74,31 +75,12 @@ typedef void (*JavaMethodPointer)(JNIEnv*, const JavaRef<jobject>&);
 // given Java object.
 void PostJavaCallback(JNIEnv* env,
                       rtc::Thread* queue,
-                      const rtc::Location& posted_from,
                       const JavaRef<jobject>& j_object,
                       JavaMethodPointer java_method_pointer) {
-  // One-off message handler that calls the Java method on the specified Java
-  // object before deleting itself.
-  class JavaAsyncCallback : public rtc::MessageHandler {
-   public:
-    JavaAsyncCallback(JNIEnv* env,
-                      const JavaRef<jobject>& j_object,
-                      JavaMethodPointer java_method_pointer)
-        : j_object_(env, j_object), java_method_pointer_(java_method_pointer) {}
-
-    void OnMessage(rtc::Message*) override {
-      java_method_pointer_(AttachCurrentThreadIfNeeded(), j_object_);
-      // The message has been delivered, clean up after ourself.
-      delete this;
-    }
-
-   private:
-    ScopedJavaGlobalRef<jobject> j_object_;
-    JavaMethodPointer java_method_pointer_;
-  };
-
-  queue->Post(posted_from,
-              new JavaAsyncCallback(env, j_object, java_method_pointer));
+  ScopedJavaGlobalRef<jobject> object(env, j_object);
+  queue->PostTask([object = std::move(object), java_method_pointer] {
+    java_method_pointer(AttachCurrentThreadIfNeeded(), object);
+  });
 }
 
 absl::optional<PeerConnectionFactoryInterface::Options>
@@ -149,11 +131,11 @@ ScopedJavaLocalRef<jobject> NativeToScopedJavaPeerConnectionFactory(
   ScopedJavaLocalRef<jobject> j_pcf = Java_PeerConnectionFactory_Constructor(
       env, NativeToJavaPointer(owned_factory));
 
-  PostJavaCallback(env, owned_factory->network_thread(), RTC_FROM_HERE, j_pcf,
+  PostJavaCallback(env, owned_factory->network_thread(), j_pcf,
                    &Java_PeerConnectionFactory_onNetworkThreadReady);
-  PostJavaCallback(env, owned_factory->worker_thread(), RTC_FROM_HERE, j_pcf,
+  PostJavaCallback(env, owned_factory->worker_thread(), j_pcf,
                    &Java_PeerConnectionFactory_onWorkerThreadReady);
-  PostJavaCallback(env, owned_factory->signaling_thread(), RTC_FROM_HERE, j_pcf,
+  PostJavaCallback(env, owned_factory->signaling_thread(), j_pcf,
                    &Java_PeerConnectionFactory_onSignalingThreadReady);
 
   return j_pcf;
@@ -371,8 +353,7 @@ JNI_PeerConnectionFactory_CreatePeerConnectionFactory(
       TakeOwnershipOfUniquePtr<NetEqFactory>(native_neteq_factory));
 }
 
-static void JNI_PeerConnectionFactory_FreeFactory(JNIEnv*,
-                                                  jlong j_p) {
+static void JNI_PeerConnectionFactory_FreeFactory(JNIEnv*, jlong j_p) {
   delete reinterpret_cast<OwnedFactoryAndThreads*>(j_p);
   field_trial::InitFieldTrialsFromString(nullptr);
   GetStaticObjects().field_trials_init_string = nullptr;
@@ -420,15 +401,20 @@ ScopedJavaLocalRef<jobject> JNI_PeerConnectionFactory_GetRtpSenderCapabilities(
     jlong native_factory,
     const JavaParamRef<jobject>& media_type) {
   auto factory = PeerConnectionFactoryFromJava(native_factory);
-  return NativeToJavaRtpCapabilities(jni, factory->GetRtpSenderCapabilities(JavaToNativeMediaType(jni, media_type)));
+  return NativeToJavaRtpCapabilities(
+      jni, factory->GetRtpSenderCapabilities(
+               JavaToNativeMediaType(jni, media_type)));
 }
 
-ScopedJavaLocalRef<jobject> JNI_PeerConnectionFactory_GetRtpReceiverCapabilities(
+ScopedJavaLocalRef<jobject>
+JNI_PeerConnectionFactory_GetRtpReceiverCapabilities(
     JNIEnv* jni,
     jlong native_factory,
     const JavaParamRef<jobject>& media_type) {
   auto factory = PeerConnectionFactoryFromJava(native_factory);
-  return NativeToJavaRtpCapabilities(jni, factory->GetRtpReceiverCapabilities(JavaToNativeMediaType(jni, media_type)));
+  return NativeToJavaRtpCapabilities(
+      jni, factory->GetRtpReceiverCapabilities(
+               JavaToNativeMediaType(jni, media_type)));
 }
 
 static jboolean JNI_PeerConnectionFactory_StartAecDump(
@@ -524,8 +510,9 @@ static jlong JNI_PeerConnectionFactory_CreateVideoTrack(
   rtc::scoped_refptr<VideoTrackInterface> track =
       PeerConnectionFactoryFromJava(native_factory)
           ->CreateVideoTrack(
-              JavaToStdString(jni, id),
-              reinterpret_cast<VideoTrackSourceInterface*>(native_source));
+              rtc::scoped_refptr<VideoTrackSourceInterface>(
+                  reinterpret_cast<VideoTrackSourceInterface*>(native_source)),
+              JavaToStdString(jni, id));
   return jlongFromPointer(track.release());
 }
 

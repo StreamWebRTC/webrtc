@@ -23,6 +23,7 @@
 
 #include <vector>
 
+#include "absl/strings/string_view.h"
 #include "absl/types/optional.h"
 #include "api/array_view.h"
 #include "api/audio/echo_canceller3_config.h"
@@ -49,19 +50,6 @@ class ProcessingConfig;
 class EchoDetector;
 class CustomAudioAnalyzer;
 class CustomProcessing;
-
-// Use to enable experimental gain control (AGC). At startup the experimental
-// AGC moves the microphone volume up to `startup_min_volume` if the current
-// microphone volume is set too low. The value is clamped to its operating range
-// [12, 255]. Here, 255 maps to 100%.
-//
-// Must be provided through AudioProcessingBuilder().Create(config).
-#if defined(WEBRTC_CHROMIUM_BUILD)
-static constexpr int kAgcStartupMinVolume = 85;
-#else
-static constexpr int kAgcStartupMinVolume = 0;
-#endif  // defined(WEBRTC_CHROMIUM_BUILD)
-static constexpr int kClippedLevelMin = 70;
 
 // The Audio Processing Module (APM) provides a collection of voice processing
 // components designed for real-time communications software.
@@ -92,12 +80,13 @@ static constexpr int kClippedLevelMin = 70;
 //   2. Parameter getters are never called concurrently with the corresponding
 //      setter.
 //
-// APM accepts only linear PCM audio data in chunks of 10 ms. The int16
-// interfaces use interleaved data, while the float interfaces use deinterleaved
-// data.
+// APM accepts only linear PCM audio data in chunks of ~10 ms (see
+// AudioProcessing::GetFrameSize() for details) and sample rates ranging from
+// 8000 Hz to 384000 Hz. The int16 interfaces use interleaved data, while the
+// float interfaces use deinterleaved data.
 //
 // Usage example, omitting error checking:
-// AudioProcessing* apm = AudioProcessingBuilder().Create();
+// rtc::scoped_refptr<AudioProcessing> apm = AudioProcessingBuilder().Create();
 //
 // AudioProcessing::Config config;
 // config.echo_canceller.enabled = true;
@@ -114,9 +103,6 @@ static constexpr int kClippedLevelMin = 70;
 // config.high_pass_filter.enabled = true;
 //
 // apm->ApplyConfig(config)
-//
-// apm->noise_reduction()->set_level(kHighSuppression);
-// apm->noise_reduction()->Enable(true);
 //
 // // Start a voice call...
 //
@@ -139,7 +125,7 @@ static constexpr int kClippedLevelMin = 70;
 // apm->Initialize();
 //
 // // Close the application...
-// delete apm;
+// apm.reset();
 //
 class RTC_EXPORT AudioProcessing : public rtc::RefCountInterface {
  public:
@@ -160,6 +146,12 @@ class RTC_EXPORT AudioProcessing : public rtc::RefCountInterface {
   struct RTC_EXPORT Config {
     // Sets the properties of the audio processing pipeline.
     struct RTC_EXPORT Pipeline {
+      // Ways to downmix a multi-channel track to mono.
+      enum class DownmixMethod {
+        kAverageChannels,  // Average across channels.
+        kUseFirstChannel   // Use the first channel.
+      };
+
       // Maximum allowed processing rate used internally. May only be set to
       // 32000 or 48000 and any differing values will be treated as 48000.
       int maximum_internal_processing_rate = 48000;
@@ -168,6 +160,9 @@ class RTC_EXPORT AudioProcessing : public rtc::RefCountInterface {
       // Allow multi-channel processing of capture audio when AEC3 is active
       // or a custom AEC is injected..
       bool multi_channel_capture = false;
+      // Indicates how to downmix multi-channel capture audio to mono (when
+      // needed).
+      DownmixMethod capture_downmix_method = DownmixMethod::kAverageChannels;
     } pipeline;
 
     // Enabled the pre-amplifier. It amplifies the capture signal
@@ -286,10 +281,12 @@ class RTC_EXPORT AudioProcessing : public rtc::RefCountInterface {
       // Enables the analog gain controller functionality.
       struct AnalogGainController {
         bool enabled = true;
-        int startup_min_volume = kAgcStartupMinVolume;
+        // TODO(bugs.webrtc.org/7494): Deprecated. Stop using and remove.
+        int startup_min_volume = 0;
         // Lowest analog microphone level that will be applied in response to
         // clipping.
-        int clipped_level_min = kClippedLevelMin;
+        int clipped_level_min = 70;
+        // If true, an adaptive digital gain is applied.
         bool enable_digital_adaptive = true;
         // Amount the microphone level is lowered with every clipping event.
         // Limited to (0, 255].
@@ -331,42 +328,56 @@ class RTC_EXPORT AudioProcessing : public rtc::RefCountInterface {
       } analog_gain_controller;
     } gain_controller1;
 
-    // Enables the next generation AGC functionality. This feature replaces the
-    // standard methods of gain control in the previous AGC. Enabling this
-    // submodule enables an adaptive digital AGC followed by a limiter. By
-    // setting `fixed_gain_db`, the limiter can be turned into a compressor that
-    // first applies a fixed gain. The adaptive digital AGC can be turned off by
-    // setting |adaptive_digital_mode=false|.
+    // Parameters for AGC2, an Automatic Gain Control (AGC) sub-module which
+    // replaces the AGC sub-module parametrized by `gain_controller1`.
+    // AGC2 brings the captured audio signal to the desired level by combining
+    // three different controllers (namely, input volume controller, adapative
+    // digital controller and fixed digital controller) and a limiter.
+    // TODO(bugs.webrtc.org:7494): Name `GainController` when AGC1 removed.
     struct RTC_EXPORT GainController2 {
       bool operator==(const GainController2& rhs) const;
       bool operator!=(const GainController2& rhs) const {
         return !(*this == rhs);
       }
 
+      // AGC2 must be created if and only if `enabled` is true.
       bool enabled = false;
-      struct FixedDigital {
-        float gain_db = 0.0f;
-      } fixed_digital;
+
+      // Parameters for the input volume controller, which adjusts the input
+      // volume applied when the audio is captured (e.g., microphone volume on
+      // a soundcard, input volume on HAL).
+      struct InputVolumeController {
+        bool operator==(const InputVolumeController& rhs) const;
+        bool operator!=(const InputVolumeController& rhs) const {
+          return !(*this == rhs);
+        }
+        bool enabled = false;
+      } input_volume_controller;
+
+      // Parameters for the adaptive digital controller, which adjusts and
+      // applies a digital gain after echo cancellation and after noise
+      // suppression.
       struct RTC_EXPORT AdaptiveDigital {
         bool operator==(const AdaptiveDigital& rhs) const;
         bool operator!=(const AdaptiveDigital& rhs) const {
           return !(*this == rhs);
         }
-
         bool enabled = false;
-        // When true, the adaptive digital controller runs but the signal is not
-        // modified.
-        bool dry_run = false;
         float headroom_db = 6.0f;
-        // TODO(bugs.webrtc.org/7494): Consider removing and inferring from
-        // `max_output_noise_level_dbfs`.
         float max_gain_db = 30.0f;
         float initial_gain_db = 8.0f;
-        int vad_reset_period_ms = 1500;
-        int adjacent_speech_frames_threshold = 12;
         float max_gain_change_db_per_second = 3.0f;
         float max_output_noise_level_dbfs = -50.0f;
       } adaptive_digital;
+
+      // Parameters for the fixed digital controller, which applies a fixed
+      // digital gain after the adaptive digital controller and before the
+      // limiter.
+      struct FixedDigital {
+        // By setting `gain_db` to a value greater than zero, the limiter can be
+        // turned into a compressor that first applies a fixed gain.
+        float gain_db = 0.0f;
+      } fixed_digital;
     } gain_controller2;
 
     std::string ToString() const;
@@ -533,7 +544,7 @@ class RTC_EXPORT AudioProcessing : public rtc::RefCountInterface {
   // enqueueing was successfull.
   virtual bool PostRuntimeSetting(RuntimeSetting setting) = 0;
 
-  // Accepts and produces a 10 ms frame interleaved 16 bit integer audio as
+  // Accepts and produces a ~10 ms frame of interleaved 16 bit integer audio as
   // specified in `input_config` and `output_config`. `src` and `dest` may use
   // the same memory, if desired.
   virtual int ProcessStream(const int16_t* const src,
@@ -553,7 +564,7 @@ class RTC_EXPORT AudioProcessing : public rtc::RefCountInterface {
                             const StreamConfig& output_config,
                             float* const* dest) = 0;
 
-  // Accepts and produces a 10 ms frame of interleaved 16 bit integer audio for
+  // Accepts and produces a ~10 ms frame of interleaved 16 bit integer audio for
   // the reverse direction audio stream as specified in `input_config` and
   // `output_config`. `src` and `dest` may use the same memory, if desired.
   virtual int ProcessReverseStream(const int16_t* const src,
@@ -574,10 +585,10 @@ class RTC_EXPORT AudioProcessing : public rtc::RefCountInterface {
   virtual int AnalyzeReverseStream(const float* const* data,
                                    const StreamConfig& reverse_config) = 0;
 
-  // Returns the most recently produced 10 ms of the linear AEC output at a rate
-  // of 16 kHz. If there is more than one capture channel, a mono representation
-  // of the input is returned. Returns true/false to indicate whether an output
-  // returned.
+  // Returns the most recently produced ~10 ms of the linear AEC output at a
+  // rate of 16 kHz. If there is more than one capture channel, a mono
+  // representation of the input is returned. Returns true/false to indicate
+  // whether an output returned.
   virtual bool GetLinearAecOutput(
       rtc::ArrayView<std::array<float, 160>> linear_output) const = 0;
 
@@ -586,9 +597,10 @@ class RTC_EXPORT AudioProcessing : public rtc::RefCountInterface {
   // HAL. Must be within the range [0, 255].
   virtual void set_stream_analog_level(int level) = 0;
 
-  // When an analog mode is set, this should be called after ProcessStream()
-  // to obtain the recommended new analog level for the audio HAL. It is the
-  // user's responsibility to apply this level.
+  // When an analog mode is set, this should be called after
+  // `set_stream_analog_level()` and `ProcessStream()` to obtain the recommended
+  // new analog level for the audio HAL. It is the user's responsibility to
+  // apply this level.
   virtual int recommended_stream_analog_level() const = 0;
 
   // This must be called if and only if echo processing is enabled.
@@ -620,7 +632,7 @@ class RTC_EXPORT AudioProcessing : public rtc::RefCountInterface {
   // return value of true indicates that the file has been
   // sucessfully opened, while a value of false indicates that
   // opening the file failed.
-  virtual bool CreateAndAttachAecDump(const std::string& file_name,
+  virtual bool CreateAndAttachAecDump(absl::string_view file_name,
                                       int64_t max_log_size_bytes,
                                       rtc::TaskQueue* worker_queue) = 0;
   virtual bool CreateAndAttachAecDump(FILE* handle,
@@ -694,7 +706,29 @@ class RTC_EXPORT AudioProcessing : public rtc::RefCountInterface {
   static constexpr int kMaxNativeSampleRateHz =
       kNativeSampleRatesHz[kNumNativeSampleRates - 1];
 
+  // APM processes audio in chunks of about 10 ms. See GetFrameSize() for
+  // details.
   static constexpr int kChunkSizeMs = 10;
+
+  // Returns floor(sample_rate_hz/100): the number of samples per channel used
+  // as input and output to the audio processing module in calls to
+  // ProcessStream, ProcessReverseStream, AnalyzeReverseStream, and
+  // GetLinearAecOutput.
+  //
+  // This is exactly 10 ms for sample rates divisible by 100. For example:
+  //  - 48000 Hz (480 samples per channel),
+  //  - 44100 Hz (441 samples per channel),
+  //  - 16000 Hz (160 samples per channel).
+  //
+  // Sample rates not divisible by 100 are received/produced in frames of
+  // approximately 10 ms. For example:
+  //  - 22050 Hz (220 samples per channel, or ~9.98 ms per frame),
+  //  - 11025 Hz (110 samples per channel, or ~9.98 ms per frame).
+  // These nondivisible sample rates yield lower audio quality compared to
+  // multiples of 100. Internal resampling to 10 ms frames causes a simulated
+  // clock drift effect which impacts the performance of (for example) echo
+  // cancellation.
+  static int GetFrameSize(int sample_rate_hz) { return sample_rate_hz / 100; }
 };
 
 class RTC_EXPORT AudioProcessingBuilder {
@@ -792,8 +826,7 @@ class StreamConfig {
 
  private:
   static size_t calculate_frames(int sample_rate_hz) {
-    return static_cast<size_t>(AudioProcessing::kChunkSizeMs * sample_rate_hz /
-                               1000);
+    return static_cast<size_t>(AudioProcessing::GetFrameSize(sample_rate_hz));
   }
 
   int sample_rate_hz_;

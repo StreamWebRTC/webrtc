@@ -10,9 +10,9 @@
 
 #include "modules/audio_device/include/audio_device_data_observer.h"
 
+#include "api/make_ref_counted.h"
 #include "modules/audio_device/include/audio_device_defines.h"
 #include "rtc_base/checks.h"
-#include "rtc_base/ref_counted_object.h"
 
 namespace webrtc {
 
@@ -55,24 +55,25 @@ class ADMWrapper : public AudioDeviceModule, public AudioTransport {
                                   uint32_t currentMicLevel,
                                   bool keyPressed,
                                   uint32_t& newMicLevel) override {
-    return RecordedDataIsAvailable(audioSamples, nSamples, nBytesPerSample,
-                                   nChannels, samples_per_sec, total_delay_ms,
-                                   clockDrift, currentMicLevel, keyPressed,
-                                   newMicLevel, /*capture_timestamp_ns*/ 0);
+    return RecordedDataIsAvailable(
+        audioSamples, nSamples, nBytesPerSample, nChannels, samples_per_sec,
+        total_delay_ms, clockDrift, currentMicLevel, keyPressed, newMicLevel,
+        /*capture_timestamp_ns=*/absl::nullopt);
   }
 
   // AudioTransport methods overrides.
-  int32_t RecordedDataIsAvailable(const void* audioSamples,
-                                  size_t nSamples,
-                                  size_t nBytesPerSample,
-                                  size_t nChannels,
-                                  uint32_t samples_per_sec,
-                                  uint32_t total_delay_ms,
-                                  int32_t clockDrift,
-                                  uint32_t currentMicLevel,
-                                  bool keyPressed,
-                                  uint32_t& newMicLevel,
-                                  int64_t capture_timestamp_ns) override {
+  int32_t RecordedDataIsAvailable(
+      const void* audioSamples,
+      size_t nSamples,
+      size_t nBytesPerSample,
+      size_t nChannels,
+      uint32_t samples_per_sec,
+      uint32_t total_delay_ms,
+      int32_t clockDrift,
+      uint32_t currentMicLevel,
+      bool keyPressed,
+      uint32_t& newMicLevel,
+      absl::optional<int64_t> capture_timestamp_ns) override {
     int32_t res = 0;
     // Capture PCM data of locally captured audio.
     if (observer_) {

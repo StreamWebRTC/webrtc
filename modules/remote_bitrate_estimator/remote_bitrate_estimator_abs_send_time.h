@@ -31,10 +31,7 @@
 #include "modules/remote_bitrate_estimator/overuse_detector.h"
 #include "modules/remote_bitrate_estimator/overuse_estimator.h"
 #include "rtc_base/checks.h"
-#include "rtc_base/race_checker.h"
 #include "rtc_base/rate_statistics.h"
-#include "rtc_base/synchronization/mutex.h"
-#include "rtc_base/thread_annotations.h"
 #include "system_wrappers/include/clock.h"
 
 namespace webrtc {
@@ -55,17 +52,10 @@ class RemoteBitrateEstimatorAbsSendTime : public RemoteBitrateEstimator {
   void IncomingPacket(int64_t arrival_time_ms,
                       size_t payload_size,
                       const RTPHeader& header) override;
-  // This class relies on Process() being called periodically (at least once
-  // every other second) for streams to be timed out properly. Therefore it
-  // shouldn't be detached from the ProcessThread except if it's about to be
-  // deleted.
-  void Process() override;
-  int64_t TimeUntilNextProcess() override;
+  TimeDelta Process() override;
   void OnRttUpdate(int64_t avg_rtt_ms, int64_t max_rtt_ms) override;
   void RemoveStream(uint32_t ssrc) override;
-  bool LatestEstimate(std::vector<uint32_t>* ssrcs,
-                      uint32_t* bitrate_bps) const override;
-  void SetMinBitrate(int min_bitrate_bps) override;
+  DataRate LatestEstimate() const override;
 
  private:
   struct Probe {
@@ -109,15 +99,12 @@ class RemoteBitrateEstimatorAbsSendTime : public RemoteBitrateEstimator {
   const Cluster* FindBestProbe(const std::list<Cluster>& clusters) const;
 
   // Returns true if a probe which changed the estimate was detected.
-  ProbeResult ProcessClusters(Timestamp now)
-      RTC_EXCLUSIVE_LOCKS_REQUIRED(&mutex_);
+  ProbeResult ProcessClusters(Timestamp now);
 
-  bool IsBitrateImproving(DataRate probe_bitrate) const
-      RTC_EXCLUSIVE_LOCKS_REQUIRED(&mutex_);
+  bool IsBitrateImproving(DataRate probe_bitrate) const;
 
-  void TimeoutStreams(Timestamp now) RTC_EXCLUSIVE_LOCKS_REQUIRED(&mutex_);
+  void TimeoutStreams(Timestamp now);
 
-  rtc::RaceChecker network_race_;
   Clock* const clock_;
   const FieldTrialBasedConfig field_trials_;
   RemoteBitrateObserver* const observer_;
@@ -132,9 +119,8 @@ class RemoteBitrateEstimatorAbsSendTime : public RemoteBitrateEstimator {
   Timestamp last_update_ = Timestamp::MinusInfinity();
   bool uma_recorded_ = false;
 
-  mutable Mutex mutex_;
-  std::map<uint32_t, Timestamp> ssrcs_ RTC_GUARDED_BY(&mutex_);
-  AimdRateControl remote_rate_ RTC_GUARDED_BY(&mutex_);
+  std::map<uint32_t, Timestamp> ssrcs_;
+  AimdRateControl remote_rate_;
 };
 
 }  // namespace webrtc

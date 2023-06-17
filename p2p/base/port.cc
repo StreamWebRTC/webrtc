@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "absl/algorithm/container.h"
+#include "absl/memory/memory.h"
 #include "absl/strings/match.h"
 #include "absl/strings/string_view.h"
 #include "p2p/base/connection.h"
@@ -36,7 +37,13 @@
 #include "rtc_base/third_party/base64/base64.h"
 #include "rtc_base/trace_event.h"
 
+namespace cricket {
 namespace {
+
+using ::webrtc::RTCError;
+using ::webrtc::RTCErrorType;
+using ::webrtc::TaskQueueBase;
+using ::webrtc::TimeDelta;
 
 rtc::PacketInfoProtocolType ConvertProtocolTypeToPacketInfoProtocolType(
     cricket::ProtocolType type) {
@@ -59,11 +66,6 @@ rtc::PacketInfoProtocolType ConvertProtocolTypeToPacketInfoProtocolType(
 const int kPortTimeoutDelay = cricket::STUN_TOTAL_TIMEOUT + 5000;
 
 }  // namespace
-
-namespace cricket {
-
-using webrtc::RTCError;
-using webrtc::RTCErrorType;
 
 // TODO(ronghuawu): Use "local", "srflx", "prflx" and "relay". But this requires
 // the signaling part be updated correspondingly as well.
@@ -95,21 +97,23 @@ const char TCPTYPE_ACTIVE_STR[] = "active";
 const char TCPTYPE_PASSIVE_STR[] = "passive";
 const char TCPTYPE_SIMOPEN_STR[] = "so";
 
-std::string Port::ComputeFoundation(const std::string& type,
-                                    const std::string& protocol,
-                                    const std::string& relay_protocol,
+std::string Port::ComputeFoundation(absl::string_view type,
+                                    absl::string_view protocol,
+                                    absl::string_view relay_protocol,
                                     const rtc::SocketAddress& base_address) {
+  // TODO(bugs.webrtc.org/14605): ensure IceTiebreaker() is set.
   rtc::StringBuilder sb;
-  sb << type << base_address.ipaddr().ToString() << protocol << relay_protocol;
+  sb << type << base_address.ipaddr().ToString() << protocol << relay_protocol
+     << rtc::ToString(IceTiebreaker());
   return rtc::ToString(rtc::ComputeCrc32(sb.Release()));
 }
 
-Port::Port(rtc::Thread* thread,
-           const std::string& type,
+Port::Port(TaskQueueBase* thread,
+           absl::string_view type,
            rtc::PacketSocketFactory* factory,
            const rtc::Network* network,
-           const std::string& username_fragment,
-           const std::string& password,
+           absl::string_view username_fragment,
+           absl::string_view password,
            const webrtc::FieldTrialsView* field_trials)
     : thread_(thread),
       factory_(factory),
@@ -133,14 +137,14 @@ Port::Port(rtc::Thread* thread,
   Construct();
 }
 
-Port::Port(rtc::Thread* thread,
-           const std::string& type,
+Port::Port(TaskQueueBase* thread,
+           absl::string_view type,
            rtc::PacketSocketFactory* factory,
            const rtc::Network* network,
            uint16_t min_port,
            uint16_t max_port,
-           const std::string& username_fragment,
-           const std::string& password,
+           absl::string_view username_fragment,
+           absl::string_view password,
            const webrtc::FieldTrialsView* field_trials)
     : thread_(thread),
       factory_(factory),
@@ -174,10 +178,9 @@ void Port::Construct() {
     password_ = rtc::CreateRandomString(ICE_PWD_LENGTH);
   }
   network_->SignalTypeChanged.connect(this, &Port::OnNetworkTypeChanged);
-  network_cost_ = network_->GetCost(*field_trials_);
+  network_cost_ = network_->GetCost(field_trials());
 
-  thread_->PostDelayed(RTC_FROM_HERE, timeout_delay_, this,
-                       MSG_DESTROY_IF_DEAD);
+  PostDestroyIfDead(/*delayed=*/true);
   RTC_LOG(LS_INFO) << ToString() << ": Port created with network cost "
                    << network_cost_;
 }
@@ -185,22 +188,7 @@ void Port::Construct() {
 Port::~Port() {
   RTC_DCHECK_RUN_ON(thread_);
   CancelPendingTasks();
-
-  // Delete all of the remaining connections.  We copy the list up front
-  // because each deletion will cause it to be modified.
-
-  std::vector<Connection*> list;
-
-  AddressMap::iterator iter = connections_.begin();
-  while (iter != connections_.end()) {
-    list.push_back(iter->second);
-    ++iter;
-  }
-
-  for (uint32_t i = 0; i < list.size(); i++) {
-    list[i]->SignalDestroyed.disconnect(this);
-    delete list[i];
-  }
+  DestroyAllConnections();
 }
 
 const std::string& Port::Type() const {
@@ -221,6 +209,7 @@ void Port::SetIceRole(IceRole role) {
 void Port::SetIceTiebreaker(uint64_t tiebreaker) {
   tiebreaker_ = tiebreaker;
 }
+
 uint64_t Port::IceTiebreaker() const {
   return tiebreaker_;
 }
@@ -264,13 +253,13 @@ Connection* Port::GetConnection(const rtc::SocketAddress& remote_addr) {
 void Port::AddAddress(const rtc::SocketAddress& address,
                       const rtc::SocketAddress& base_address,
                       const rtc::SocketAddress& related_address,
-                      const std::string& protocol,
-                      const std::string& relay_protocol,
-                      const std::string& tcptype,
-                      const std::string& type,
+                      absl::string_view protocol,
+                      absl::string_view relay_protocol,
+                      absl::string_view tcptype,
+                      absl::string_view type,
                       uint32_t type_preference,
                       uint32_t relay_preference,
-                      const std::string& url,
+                      absl::string_view url,
                       bool is_final) {
   RTC_DCHECK_RUN_ON(thread_);
   if (protocol == TCP_PROTOCOL_NAME && type == LOCAL_PORT_TYPE) {
@@ -299,7 +288,7 @@ void Port::AddAddress(const rtc::SocketAddress& address,
 }
 
 bool Port::MaybeObfuscateAddress(Candidate* c,
-                                 const std::string& type,
+                                 absl::string_view type,
                                  bool is_final) {
   // TODO(bugs.webrtc.org/9723): Use a config to control the feature of IP
   // handling with mDNS.
@@ -360,11 +349,11 @@ void Port::AddOrReplaceConnection(Connection* conn) {
         << ": A new connection was created on an existing remote address. "
            "New remote candidate: "
         << conn->remote_candidate().ToSensitiveString();
-    ret.first->second->SignalDestroyed.disconnect(this);
-    ret.first->second->Destroy();
+    std::unique_ptr<Connection> old_conn = absl::WrapUnique(ret.first->second);
     ret.first->second = conn;
+    HandleConnectionDestroyed(old_conn.get());
+    old_conn->Shutdown();
   }
-  conn->SignalDestroyed.connect(this, &Port::OnConnectionDestroyed);
 }
 
 void Port::OnReadPacket(const char* data,
@@ -622,9 +611,9 @@ rtc::DiffServCodePoint Port::StunDscpValue() const {
 
 void Port::DestroyAllConnections() {
   RTC_DCHECK_RUN_ON(thread_);
-  for (auto kv : connections_) {
-    kv.second->SignalDestroyed.disconnect(this);
-    kv.second->Destroy();
+  for (auto& [unused, connection] : connections_) {
+    connection->Shutdown();
+    delete connection;
   }
   connections_.clear();
 }
@@ -666,7 +655,7 @@ bool Port::ParseStunUsername(const StunMessage* stun_msg,
 
 bool Port::MaybeIceRoleConflict(const rtc::SocketAddress& addr,
                                 IceMessage* stun_msg,
-                                const std::string& remote_ufrag) {
+                                absl::string_view remote_ufrag) {
   // Validate ICE_CONTROLLING or ICE_CONTROLLED attributes.
   bool ret = true;
   IceRole remote_ice_role = ICEROLE_UNKNOWN;
@@ -725,8 +714,8 @@ bool Port::MaybeIceRoleConflict(const rtc::SocketAddress& addr,
   return ret;
 }
 
-std::string Port::CreateStunUsername(const std::string& remote_username) const {
-  return remote_username + ":" + username_fragment();
+std::string Port::CreateStunUsername(absl::string_view remote_username) const {
+  return std::string(remote_username) + ":" + username_fragment();
 }
 
 bool Port::HandleIncomingPacket(rtc::AsyncPacketSocket* socket,
@@ -745,7 +734,7 @@ bool Port::CanHandleIncomingPacketsFrom(const rtc::SocketAddress&) const {
 void Port::SendBindingErrorResponse(StunMessage* message,
                                     const rtc::SocketAddress& addr,
                                     int error_code,
-                                    const std::string& reason) {
+                                    absl::string_view reason) {
   RTC_DCHECK(message->type() == STUN_BINDING_REQUEST ||
              message->type() == GOOG_PING_REQUEST);
 
@@ -759,7 +748,7 @@ void Port::SendBindingErrorResponse(StunMessage* message,
   // maintain backwards compatiblility.
   auto error_attr = StunAttribute::CreateErrorCode();
   error_attr->SetCode(error_code);
-  error_attr->SetReason(reason);
+  error_attr->SetReason(std::string(reason));
   response.AddAttribute(std::move(error_attr));
 
   // Per Section 10.1.2, certain error cases don't get a MESSAGE-INTEGRITY,
@@ -836,19 +825,33 @@ void Port::KeepAliveUntilPruned() {
 
 void Port::Prune() {
   state_ = State::PRUNED;
-  thread_->Post(RTC_FROM_HERE, this, MSG_DESTROY_IF_DEAD);
+  PostDestroyIfDead(/*delayed=*/false);
 }
 
 // Call to stop any currently pending operations from running.
 void Port::CancelPendingTasks() {
   TRACE_EVENT0("webrtc", "Port::CancelPendingTasks");
   RTC_DCHECK_RUN_ON(thread_);
-  thread_->Clear(this);
+  weak_factory_.InvalidateWeakPtrs();
 }
 
-void Port::OnMessage(rtc::Message* pmsg) {
+void Port::PostDestroyIfDead(bool delayed) {
+  rtc::WeakPtr<Port> weak_ptr = NewWeakPtr();
+  auto task = [weak_ptr = std::move(weak_ptr)] {
+    if (weak_ptr) {
+      weak_ptr->DestroyIfDead();
+    }
+  };
+  if (delayed) {
+    thread_->PostDelayedTask(std::move(task),
+                             TimeDelta::Millis(timeout_delay_));
+  } else {
+    thread_->PostTask(std::move(task));
+  }
+}
+
+void Port::DestroyIfDead() {
   RTC_DCHECK_RUN_ON(thread_);
-  RTC_DCHECK(pmsg->message_id == MSG_DESTROY_IF_DEAD);
   bool dead =
       (state_ == State::INIT || state_ == State::PRUNED) &&
       connections_.empty() &&
@@ -883,7 +886,7 @@ std::string Port::ToString() const {
 // TODO(honghaiz): Make the network cost configurable from user setting.
 void Port::UpdateNetworkCost() {
   RTC_DCHECK_RUN_ON(thread_);
-  uint16_t new_cost = network_->GetCost(*field_trials_);
+  uint16_t new_cost = network_->GetCost(field_trials());
   if (network_cost_ == new_cost) {
     return;
   }
@@ -904,11 +907,15 @@ void Port::EnablePortPackets() {
   enable_port_packets_ = true;
 }
 
-void Port::OnConnectionDestroyed(Connection* conn) {
-  AddressMap::iterator iter =
-      connections_.find(conn->remote_candidate().address());
-  RTC_DCHECK(iter != connections_.end());
-  connections_.erase(iter);
+bool Port::OnConnectionDestroyed(Connection* conn) {
+  if (connections_.erase(conn->remote_candidate().address()) == 0) {
+    // This could indicate a programmer error outside of webrtc so while we
+    // do have this check here to alert external developers, we also need to
+    // handle it since it might be a corner case not caught in tests.
+    RTC_DCHECK_NOTREACHED() << "Calling Destroy recursively?";
+    return false;
+  }
+
   HandleConnectionDestroyed(conn);
 
   // Ports time out after all connections fail if it is not marked as
@@ -918,8 +925,28 @@ void Port::OnConnectionDestroyed(Connection* conn) {
   // not cause the Port to be destroyed.
   if (connections_.empty()) {
     last_time_all_connections_removed_ = rtc::TimeMillis();
-    thread_->PostDelayed(RTC_FROM_HERE, timeout_delay_, this,
-                         MSG_DESTROY_IF_DEAD);
+    PostDestroyIfDead(/*delayed=*/true);
+  }
+
+  return true;
+}
+
+void Port::DestroyConnectionInternal(Connection* conn, bool async) {
+  RTC_DCHECK_RUN_ON(thread_);
+  if (!OnConnectionDestroyed(conn))
+    return;
+
+  conn->Shutdown();
+  if (async) {
+    // Unwind the stack before deleting the object in case upstream callers
+    // need to refer to the Connection's state as part of teardown.
+    // NOTE: We move ownership of `conn` into the capture section of the lambda
+    // so that the object will always be deleted, including if PostTask fails.
+    // In such a case (only tests), deletion would happen inside of the call
+    // to `DestroyConnection()`.
+    thread_->PostTask([conn = absl::WrapUnique(conn)]() {});
+  } else {
+    delete conn;
   }
 }
 

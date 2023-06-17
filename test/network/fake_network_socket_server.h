@@ -32,7 +32,6 @@ class FakeNetworkSocketServer : public rtc::SocketServer {
   explicit FakeNetworkSocketServer(EndpointsContainer* endpoints_controller);
   ~FakeNetworkSocketServer() override;
 
-
   // rtc::SocketFactory methods:
   rtc::Socket* CreateSocket(int family, int type) override;
 
@@ -40,7 +39,7 @@ class FakeNetworkSocketServer : public rtc::SocketServer {
   // Called by the network thread when this server is installed, kicking off the
   // message handler loop.
   void SetMessageQueue(rtc::Thread* thread) override;
-  bool Wait(int cms, bool process_io) override;
+  bool Wait(webrtc::TimeDelta max_wait_duration, bool process_io) override;
   void WakeUp() override;
 
  protected:

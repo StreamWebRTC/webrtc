@@ -41,6 +41,9 @@ class RateLimiter;
 class RtcEventLog;
 class RtpPacketToSend;
 
+// Maximum amount of padding in RFC 3550 is 255 bytes.
+constexpr size_t kMaxPaddingLength = 255;
+
 class RTPSender {
  public:
   RTPSender(const RtpRtcpInterface::Configuration& config,
@@ -63,6 +66,7 @@ class RTPSender {
   uint16_t SequenceNumber() const RTC_LOCKS_EXCLUDED(send_mutex_);
   void SetSequenceNumber(uint16_t seq) RTC_LOCKS_EXCLUDED(send_mutex_);
 
+  std::vector<uint32_t> Csrcs() const;
   void SetCsrcs(const std::vector<uint32_t>& csrcs)
       RTC_LOCKS_EXCLUDED(send_mutex_);
 
@@ -106,6 +110,9 @@ class RTPSender {
   absl::optional<uint32_t> RtxSsrc() const RTC_LOCKS_EXCLUDED(send_mutex_) {
     return rtx_ssrc_;
   }
+  // Returns expected size difference between an RTX packet and media packet
+  // that RTX packet is created from. Returns 0 if RTX is disabled.
+  size_t RtxPacketOverhead() const;
 
   void SetRtxPayloadType(int payload_type, int associated_payload_type)
       RTC_LOCKS_EXCLUDED(send_mutex_);
@@ -175,9 +182,6 @@ class RTPSender {
   const uint32_t ssrc_;
   const absl::optional<uint32_t> rtx_ssrc_;
   const absl::optional<uint32_t> flexfec_ssrc_;
-  // Limits GeneratePadding() outcome to <=
-  //  `max_padding_size_factor_` * `target_size_bytes`
-  const double max_padding_size_factor_;
 
   RtpPacketHistory* const packet_history_;
   RtpPacketSender* const paced_sender_;

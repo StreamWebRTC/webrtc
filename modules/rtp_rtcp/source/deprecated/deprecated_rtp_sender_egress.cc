@@ -15,7 +15,7 @@
 #include <utility>
 
 #include "absl/strings/match.h"
-#include "api/transport/field_trial_based_config.h"
+#include "api/units/timestamp.h"
 #include "logging/rtc_event_log/events/rtc_event_rtp_packet_outgoing.h"
 #include "modules/remote_bitrate_estimator/test/bwe_test_logging.h"
 #include "rtc_base/logging.h"
@@ -27,11 +27,6 @@ constexpr int kSendSideDelayWindowMs = 1000;
 constexpr int kBitrateStatisticsWindowMs = 1000;
 constexpr size_t kRtpSequenceNumberMapMaxEntries = 1 << 13;
 
-bool IsDisabled(absl::string_view name, const FieldTrialsView* field_trials) {
-  FieldTrialBasedConfig default_trials;
-  auto& trials = field_trials ? *field_trials : default_trials;
-  return absl::StartsWith(trials.Lookup(name), "Disabled");
-}
 }  // namespace
 
 DEPRECATED_RtpSenderEgress::NonPacedPacketSender::NonPacedPacketSender(
@@ -71,8 +66,6 @@ DEPRECATED_RtpSenderEgress::DEPRECATED_RtpSenderEgress(
       flexfec_ssrc_(config.fec_generator ? config.fec_generator->FecSsrc()
                                          : absl::nullopt),
       populate_network2_timestamp_(config.populate_network2_timestamp),
-      send_side_bwe_with_overhead_(
-          !IsDisabled("WebRTC-SendSideBwe-WithOverhead", config.field_trials)),
       clock_(config.clock),
       packet_history_(packet_history),
       transport_(config.outgoing_transport),
@@ -89,7 +82,6 @@ DEPRECATED_RtpSenderEgress::DEPRECATED_RtpSenderEgress(
       timestamp_offset_(0),
       max_delay_it_(send_delays_.end()),
       sum_delays_ms_(0),
-      total_packet_send_delay_ms_(0),
       send_rates_(kNumMediaTypes,
                   {kBitrateStatisticsWindowMs, RateStatistics::kBpsScale}),
       rtp_sequence_number_map_(need_rtp_packet_infos_
@@ -105,7 +97,8 @@ void DEPRECATED_RtpSenderEgress::SendPacket(
   const uint32_t packet_ssrc = packet->Ssrc();
   RTC_DCHECK(packet->packet_type().has_value());
   RTC_DCHECK(HasCorrectSsrc(*packet));
-  int64_t now_ms = clock_->TimeInMilliseconds();
+  Timestamp now = clock_->CurrentTime();
+  int64_t now_ms = now.ms();
 
   if (is_audio_) {
 #if BWE_TEST_LOGGING_COMPILE_TIME_ENABLE
@@ -160,15 +153,14 @@ void DEPRECATED_RtpSenderEgress::SendPacket(
     packet->SetExtension<TransmissionOffset>(kTimestampTicksPerMs * diff_ms);
   }
   if (packet->HasExtension<AbsoluteSendTime>()) {
-    packet->SetExtension<AbsoluteSendTime>(
-        AbsoluteSendTime::MsTo24Bits(now_ms));
+    packet->SetExtension<AbsoluteSendTime>(AbsoluteSendTime::To24Bits(now));
   }
 
   if (packet->HasExtension<VideoTimingExtension>()) {
     if (populate_network2_timestamp_) {
-      packet->set_network2_time(Timestamp::Millis(now_ms));
+      packet->set_network2_time(now);
     } else {
-      packet->set_pacer_exit_time(Timestamp::Millis(now_ms));
+      packet->set_pacer_exit_time(now);
     }
   }
 
@@ -200,7 +192,7 @@ void DEPRECATED_RtpSenderEgress::SendPacket(
   // actual sending fails.
   if (is_media && packet->allow_retransmission()) {
     packet_history_->PutRtpPacket(std::make_unique<RtpPacketToSend>(*packet),
-                                  Timestamp::Millis(now_ms));
+                                  now);
   } else if (packet->retransmitted_sequence_number()) {
     packet_history_->MarkPacketAsSent(*packet->retransmitted_sequence_number());
   }
@@ -316,16 +308,11 @@ void DEPRECATED_RtpSenderEgress::AddPacketToTransportFeedback(
     const RtpPacketToSend& packet,
     const PacedPacketInfo& pacing_info) {
   if (transport_feedback_observer_) {
-    size_t packet_size = packet.payload_size() + packet.padding_size();
-    if (send_side_bwe_with_overhead_) {
-      packet_size = packet.size();
-    }
-
     RtpPacketSendInfo packet_info;
     packet_info.media_ssrc = ssrc_;
     packet_info.transport_sequence_number = packet_id;
     packet_info.rtp_sequence_number = packet.SequenceNumber();
-    packet_info.length = packet_size;
+    packet_info.length = packet.size();
     packet_info.pacing_info = pacing_info;
     packet_info.packet_type = packet.packet_type();
     transport_feedback_observer_->OnAddPacket(packet_info);
@@ -340,7 +327,6 @@ void DEPRECATED_RtpSenderEgress::UpdateDelayStatistics(int64_t capture_time_ms,
 
   int avg_delay_ms = 0;
   int max_delay_ms = 0;
-  uint64_t total_packet_send_delay_ms = 0;
   {
     MutexLock lock(&lock_);
     // Compute the max and average of the recent capture-to-send delays.
@@ -391,8 +377,6 @@ void DEPRECATED_RtpSenderEgress::UpdateDelayStatistics(int64_t capture_time_ms,
       max_delay_it_ = it;
     }
     sum_delays_ms_ += new_send_delay;
-    total_packet_send_delay_ms_ += new_send_delay;
-    total_packet_send_delay_ms = total_packet_send_delay_ms_;
 
     size_t num_delays = send_delays_.size();
     RTC_DCHECK(max_delay_it_ != send_delays_.end());
@@ -404,8 +388,8 @@ void DEPRECATED_RtpSenderEgress::UpdateDelayStatistics(int64_t capture_time_ms,
     avg_delay_ms =
         rtc::dchecked_cast<int>((sum_delays_ms_ + num_delays / 2) / num_delays);
   }
-  send_side_delay_observer_->SendSideDelayUpdated(
-      avg_delay_ms, max_delay_ms, total_packet_send_delay_ms, ssrc);
+  send_side_delay_observer_->SendSideDelayUpdated(avg_delay_ms, max_delay_ms,
+                                                  ssrc);
 }
 
 void DEPRECATED_RtpSenderEgress::RecomputeMaxSendDelay() {

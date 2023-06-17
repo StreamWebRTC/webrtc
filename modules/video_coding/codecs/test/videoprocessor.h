@@ -21,11 +21,11 @@
 
 #include "absl/types/optional.h"
 #include "api/sequence_checker.h"
-#include "api/task_queue/queued_task.h"
 #include "api/task_queue/task_queue_base.h"
 #include "api/test/videocodec_test_fixture.h"
 #include "api/video/encoded_image.h"
 #include "api/video/i420_buffer.h"
+#include "api/video/resolution.h"
 #include "api/video/video_bitrate_allocation.h"
 #include "api/video/video_bitrate_allocator.h"
 #include "api/video/video_frame.h"
@@ -50,6 +50,7 @@ namespace test {
 // measure times properly.
 // The class processes a frame at the time for the configured input file.
 // It maintains state of where in the source input file the processing is at.
+// TODO(webrtc:14852): Deprecated in favor VideoCodecTester.
 class VideoProcessor {
  public:
   using VideoDecoderList = std::vector<std::unique_ptr<VideoDecoder>>;
@@ -105,8 +106,11 @@ class VideoProcessor {
 
       // Post the callback to the right task queue, if needed.
       if (!task_queue_->IsCurrent()) {
-        task_queue_->PostTask(std::make_unique<EncodeCallbackTask>(
-            video_processor_, encoded_image, codec_specific_info));
+        VideoProcessor* video_processor = video_processor_;
+        task_queue_->PostTask([video_processor, encoded_image,
+                               codec_specific_info = *codec_specific_info] {
+          video_processor->FrameEncoded(encoded_image, codec_specific_info);
+        });
         return Result(Result::OK, 0);
       }
 
@@ -115,27 +119,6 @@ class VideoProcessor {
     }
 
    private:
-    class EncodeCallbackTask : public QueuedTask {
-     public:
-      EncodeCallbackTask(VideoProcessor* video_processor,
-                         const webrtc::EncodedImage& encoded_image,
-                         const webrtc::CodecSpecificInfo* codec_specific_info)
-          : video_processor_(video_processor),
-            encoded_image_(encoded_image),
-            codec_specific_info_(*codec_specific_info) {
-      }
-
-      bool Run() override {
-        video_processor_->FrameEncoded(encoded_image_, codec_specific_info_);
-        return true;
-      }
-
-     private:
-      VideoProcessor* const video_processor_;
-      webrtc::EncodedImage encoded_image_;
-      const webrtc::CodecSpecificInfo codec_specific_info_;
-    };
-
     VideoProcessor* const video_processor_;
     TaskQueueBase* const task_queue_;
   };
@@ -210,8 +193,9 @@ class VideoProcessor {
   webrtc::VideoEncoder* const encoder_;
   VideoDecoderList* const decoders_;
   const std::unique_ptr<VideoBitrateAllocator> bitrate_allocator_;
-  VideoBitrateAllocation bitrate_allocation_ RTC_GUARDED_BY(sequence_checker_);
-  double framerate_fps_ RTC_GUARDED_BY(sequence_checker_);
+
+  // Target bitrate and framerate per frame.
+  std::map<size_t, RateProfile> target_rates_ RTC_GUARDED_BY(sequence_checker_);
 
   // Adapters for the codec callbacks.
   VideoProcessorEncodeCompleteCallback encode_callback_;

@@ -43,7 +43,6 @@
 #include "rtc_base/copy_on_write_buffer.h"
 #include "rtc_base/gunit.h"
 #include "rtc_base/physical_socket_server.h"
-#include "rtc_base/ref_counted_object.h"
 #include "rtc_base/third_party/sigslot/sigslot.h"
 #include "rtc_base/thread.h"
 #include "test/gmock.h"
@@ -87,9 +86,9 @@ class PeerConnectionEndToEndBaseTest : public sigslot::has_slots<>,
     RTC_CHECK(network_thread_->Start());
     RTC_CHECK(worker_thread_->Start());
     caller_ = rtc::make_ref_counted<PeerConnectionTestWrapper>(
-        "caller", network_thread_.get(), worker_thread_.get());
+        "caller", &pss_, network_thread_.get(), worker_thread_.get());
     callee_ = rtc::make_ref_counted<PeerConnectionTestWrapper>(
-        "callee", network_thread_.get(), worker_thread_.get());
+        "callee", &pss_, network_thread_.get(), worker_thread_.get());
     webrtc::PeerConnectionInterface::IceServer ice_server;
     ice_server.uri = "stun:stun.l.google.com:19302";
     config_.servers.push_back(ice_server);
@@ -689,37 +688,6 @@ TEST_P(PeerConnectionEndToEndTest,
   // Since the second channel was created after the first finished closing, it
   // should be able to re-use the first one's ID.
   EXPECT_EQ(first_channel_id, caller_dc->id());
-  TestDataChannelSendAndReceive(caller_dc.get(),
-                                callee_signaled_data_channels_[1].get());
-
-  CloseDataChannels(caller_dc.get(), callee_signaled_data_channels_, 1);
-}
-
-// Similar to the above test, but don't wait for the first channel to finish
-// closing before creating the second one.
-TEST_P(PeerConnectionEndToEndTest,
-       DataChannelFromOpenWorksWhilePreviousChannelClosing) {
-  CreatePcs(webrtc::MockAudioEncoderFactory::CreateEmptyFactory(),
-            webrtc::MockAudioDecoderFactory::CreateEmptyFactory());
-
-  webrtc::DataChannelInit init;
-  rtc::scoped_refptr<DataChannelInterface> caller_dc(
-      caller_->CreateDataChannel("data", init));
-
-  Negotiate();
-  WaitForConnection();
-
-  WaitForDataChannelsToOpen(caller_dc.get(), callee_signaled_data_channels_, 0);
-  int first_channel_id = caller_dc->id();
-  caller_dc->Close();
-
-  // Immediately create a new channel, before waiting for the previous one to
-  // transition to "closed".
-  caller_dc = caller_->CreateDataChannel("data2", init);
-  WaitForDataChannelsToOpen(caller_dc.get(), callee_signaled_data_channels_, 1);
-  // Since the second channel was created while the first was still closing,
-  // it should have been assigned a different ID.
-  EXPECT_NE(first_channel_id, caller_dc->id());
   TestDataChannelSendAndReceive(caller_dc.get(),
                                 callee_signaled_data_channels_[1].get());
 

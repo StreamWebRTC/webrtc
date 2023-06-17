@@ -15,7 +15,6 @@
 #include "api/video_codecs/sdp_video_format.h"
 #include "call/rtp_config.h"
 #include "rtc_base/checks.h"
-#include "rtc_base/ref_counted_object.h"
 
 namespace webrtc {
 namespace test {
@@ -107,10 +106,10 @@ std::vector<VideoStream> CreateVideoStreams(
 DefaultVideoStreamFactory::DefaultVideoStreamFactory() {}
 
 std::vector<VideoStream> DefaultVideoStreamFactory::CreateEncoderStreams(
-    int width,
-    int height,
+    int frame_width,
+    int frame_height,
     const webrtc::VideoEncoderConfig& encoder_config) {
-  return CreateVideoStreams(width, height, encoder_config);
+  return CreateVideoStreams(frame_width, frame_height, encoder_config);
 }
 
 void FillEncoderConfiguration(VideoCodecType codec_type,

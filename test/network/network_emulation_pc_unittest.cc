@@ -26,6 +26,7 @@
 #include "pc/peer_connection_wrapper.h"
 #include "pc/test/mock_peer_connection_observers.h"
 #include "rtc_base/gunit.h"
+#include "rtc_base/task_queue_for_test.h"
 #include "test/gmock.h"
 #include "test/gtest.h"
 #include "test/network/network_emulation.h"
@@ -117,7 +118,8 @@ TEST(NetworkEmulationManagerPCTest, Run) {
   signaling_thread->Start();
 
   // Setup emulated network
-  NetworkEmulationManagerImpl emulation(TimeMode::kRealTime);
+  NetworkEmulationManagerImpl emulation(
+      TimeMode::kRealTime, EmulatedNetworkStatsGatheringMode::kDefault);
 
   EmulatedNetworkNode* alice_node = emulation.CreateEmulatedNode(
       std::make_unique<SimulatedNetwork>(BuiltInNetworkBehaviorConfig()));
@@ -146,7 +148,7 @@ TEST(NetworkEmulationManagerPCTest, Run) {
   std::unique_ptr<MockPeerConnectionObserver> bob_observer =
       std::make_unique<MockPeerConnectionObserver>();
 
-  signaling_thread->Invoke<void>(RTC_FROM_HERE, [&]() {
+  SendTask(signaling_thread.get(), [&]() {
     alice_pcf = CreatePeerConnectionFactory(signaling_thread.get(),
                                             alice_network->network_thread());
     alice_pc = CreatePeerConnection(alice_pcf, alice_observer.get(),
@@ -167,7 +169,7 @@ TEST(NetworkEmulationManagerPCTest, Run) {
       std::make_unique<PeerConnectionWrapper>(bob_pcf, bob_pc,
                                               std::move(bob_observer));
 
-  signaling_thread->Invoke<void>(RTC_FROM_HERE, [&]() {
+  SendTask(signaling_thread.get(), [&]() {
     rtc::scoped_refptr<webrtc::AudioSourceInterface> source =
         alice_pcf->CreateAudioSource(cricket::AudioOptions());
     rtc::scoped_refptr<AudioTrackInterface> track =
@@ -208,7 +210,8 @@ TEST(NetworkEmulationManagerPCTest, RunTURN) {
   signaling_thread->Start();
 
   // Setup emulated network
-  NetworkEmulationManagerImpl emulation(TimeMode::kRealTime);
+  NetworkEmulationManagerImpl emulation(
+      TimeMode::kRealTime, EmulatedNetworkStatsGatheringMode::kDefault);
 
   EmulatedNetworkNode* alice_node = emulation.CreateEmulatedNode(
       std::make_unique<SimulatedNetwork>(BuiltInNetworkBehaviorConfig()));
@@ -256,7 +259,7 @@ TEST(NetworkEmulationManagerPCTest, RunTURN) {
   std::unique_ptr<MockPeerConnectionObserver> bob_observer =
       std::make_unique<MockPeerConnectionObserver>();
 
-  signaling_thread->Invoke<void>(RTC_FROM_HERE, [&]() {
+  SendTask(signaling_thread.get(), [&]() {
     alice_pcf = CreatePeerConnectionFactory(signaling_thread.get(),
                                             alice_network->network_thread());
     alice_pc = CreatePeerConnection(
@@ -277,7 +280,7 @@ TEST(NetworkEmulationManagerPCTest, RunTURN) {
       std::make_unique<PeerConnectionWrapper>(bob_pcf, bob_pc,
                                               std::move(bob_observer));
 
-  signaling_thread->Invoke<void>(RTC_FROM_HERE, [&]() {
+  SendTask(signaling_thread.get(), [&]() {
     rtc::scoped_refptr<webrtc::AudioSourceInterface> source =
         alice_pcf->CreateAudioSource(cricket::AudioOptions());
     rtc::scoped_refptr<AudioTrackInterface> track =

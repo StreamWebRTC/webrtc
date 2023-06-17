@@ -27,22 +27,18 @@
 #include "api/scoped_refptr.h"
 #include "api/sequence_checker.h"
 #include "media/base/media_channel.h"
+#include "pc/legacy_stats_collector_interface.h"
 #include "pc/rtp_receiver.h"
 #include "pc/rtp_receiver_proxy.h"
 #include "pc/rtp_sender.h"
 #include "pc/rtp_sender_proxy.h"
 #include "pc/rtp_transceiver.h"
-#include "pc/stats_collector_interface.h"
 #include "pc/transceiver_list.h"
 #include "pc/usage_pattern.h"
 #include "rtc_base/third_party/sigslot/sigslot.h"
 #include "rtc_base/thread.h"
 #include "rtc_base/thread_annotations.h"
 #include "rtc_base/weak_ptr.h"
-
-namespace cricket {
-class ChannelManager;
-}
 
 namespace rtc {
 class Thread;
@@ -79,7 +75,7 @@ class RtpTransmissionManager : public RtpSenderBase::SetStreamsObserver {
                          ConnectionContext* context,
                          UsagePattern* usage_pattern,
                          PeerConnectionObserver* observer,
-                         StatsCollectorInterface* stats_,
+                         LegacyStatsCollectorInterface* legacy_stats,
                          std::function<void()> on_negotiation_needed);
 
   // No move or copy permitted.
@@ -95,7 +91,8 @@ class RtpTransmissionManager : public RtpSenderBase::SetStreamsObserver {
   // Add a new track, creating transceiver if required.
   RTCErrorOr<rtc::scoped_refptr<RtpSenderInterface>> AddTrack(
       rtc::scoped_refptr<MediaStreamTrackInterface> track,
-      const std::vector<std::string>& stream_ids);
+      const std::vector<std::string>& stream_ids,
+      const std::vector<RtpEncodingParameters>* init_send_encodings);
 
   // Create a new RTP sender. Does not associate with a transceiver.
   rtc::scoped_refptr<RtpSenderProxyWithInternal<RtpSenderInternal>>
@@ -121,7 +118,8 @@ class RtpTransmissionManager : public RtpSenderBase::SetStreamsObserver {
   // transceiver is available.
   rtc::scoped_refptr<RtpTransceiverProxyWithInternal<RtpTransceiver>>
   FindFirstTransceiverForAddedTrack(
-      rtc::scoped_refptr<MediaStreamTrackInterface> track);
+      rtc::scoped_refptr<MediaStreamTrackInterface> track,
+      const std::vector<RtpEncodingParameters>* init_send_encodings);
 
   // Returns the list of senders currently associated with some
   // registered transceiver
@@ -206,8 +204,12 @@ class RtpTransmissionManager : public RtpSenderBase::SetStreamsObserver {
 
   // Plan B helpers for getting the voice/video media channels for the single
   // audio/video transceiver, if it exists.
-  cricket::VoiceMediaChannel* voice_media_channel() const;
-  cricket::VideoMediaChannel* video_media_channel() const;
+  cricket::VoiceMediaSendChannelInterface* voice_media_send_channel() const;
+  cricket::VideoMediaSendChannelInterface* video_media_send_channel() const;
+  cricket::VoiceMediaReceiveChannelInterface* voice_media_receive_channel()
+      const;
+  cricket::VideoMediaReceiveChannelInterface* video_media_receive_channel()
+      const;
 
  private:
   rtc::Thread* signaling_thread() const { return context_->signaling_thread(); }
@@ -220,11 +222,13 @@ class RtpTransmissionManager : public RtpSenderBase::SetStreamsObserver {
   // AddTrack implementation when Unified Plan is specified.
   RTCErrorOr<rtc::scoped_refptr<RtpSenderInterface>> AddTrackUnifiedPlan(
       rtc::scoped_refptr<MediaStreamTrackInterface> track,
-      const std::vector<std::string>& stream_ids);
+      const std::vector<std::string>& stream_ids,
+      const std::vector<RtpEncodingParameters>* init_send_encodings);
   // AddTrack implementation when Plan B is specified.
   RTCErrorOr<rtc::scoped_refptr<RtpSenderInterface>> AddTrackPlanB(
       rtc::scoped_refptr<MediaStreamTrackInterface> track,
-      const std::vector<std::string>& stream_ids);
+      const std::vector<std::string>& stream_ids,
+      const std::vector<RtpEncodingParameters>* init_send_encodings);
 
   // Create an RtpReceiver that sources an audio track.
   void CreateAudioReceiver(MediaStreamInterface* stream,
@@ -264,7 +268,7 @@ class RtpTransmissionManager : public RtpSenderBase::SetStreamsObserver {
   ConnectionContext* context_;
   UsagePattern* usage_pattern_;
   PeerConnectionObserver* observer_;
-  StatsCollectorInterface* const stats_;
+  LegacyStatsCollectorInterface* const legacy_stats_;
   std::function<void()> on_negotiation_needed_;
   rtc::WeakPtrFactory<RtpTransmissionManager> weak_ptr_factory_
       RTC_GUARDED_BY(signaling_thread());

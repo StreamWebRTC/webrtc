@@ -17,9 +17,9 @@
 
 #include "absl/algorithm/container.h"
 #include "api/scoped_refptr.h"
+#include "api/task_queue/pending_task_safety_flag.h"
+#include "rtc_base/event.h"
 #include "rtc_base/logging.h"
-#include "rtc_base/task_utils/pending_task_safety_flag.h"
-#include "rtc_base/task_utils/to_queued_task.h"
 #include "rtc_base/thread.h"
 
 namespace webrtc {
@@ -109,10 +109,9 @@ void FakeNetworkSocket::OnPacketReceived(EmulatedIpPacket packet) {
     SignalReadEvent(this);
     RTC_DCHECK(!pending_);
   };
-  thread_->PostTask(ToQueuedTask(alive_, std::move(task)));
+  thread_->PostTask(SafeTask(alive_, std::move(task)));
   socket_server_->WakeUp();
 }
-
 
 rtc::SocketAddress FakeNetworkSocket::GetLocalAddress() const {
   RTC_DCHECK_RUN_ON(thread_);
@@ -304,17 +303,18 @@ void FakeNetworkSocketServer::SetMessageQueue(rtc::Thread* thread) {
 }
 
 // Always returns true (if return false, it won't be invoked again...)
-bool FakeNetworkSocketServer::Wait(int cms, bool process_io) {
+bool FakeNetworkSocketServer::Wait(webrtc::TimeDelta max_wait_duration,
+                                   bool process_io) {
   RTC_DCHECK(thread_ == rtc::Thread::Current());
-  if (cms != 0)
-    wakeup_.Wait(cms);
+  if (!max_wait_duration.IsZero())
+    wakeup_.Wait(max_wait_duration);
+
   return true;
 }
 
 void FakeNetworkSocketServer::WakeUp() {
   wakeup_.Set();
 }
-
 
 }  // namespace test
 }  // namespace webrtc

@@ -13,10 +13,9 @@
 
 #include <memory>
 
+#include "api/task_queue/pending_task_safety_flag.h"
 #include "rtc_base/stream.h"
 #include "rtc_base/synchronization/mutex.h"
-#include "rtc_base/task_utils/pending_task_safety_flag.h"
-#include "rtc_base/task_utils/to_queued_task.h"
 
 namespace rtc {
 
@@ -38,14 +37,12 @@ class FifoBuffer final : public StreamInterface {
 
   // StreamInterface methods
   StreamState GetState() const override;
-  StreamResult Read(void* buffer,
-                    size_t bytes,
-                    size_t* bytes_read,
-                    int* error) override;
-  StreamResult Write(const void* buffer,
-                     size_t bytes,
-                     size_t* bytes_written,
-                     int* error) override;
+  StreamResult Read(rtc::ArrayView<uint8_t> buffer,
+                    size_t& bytes_read,
+                    int& error) override;
+  StreamResult Write(rtc::ArrayView<const uint8_t> buffer,
+                     size_t& bytes_written,
+                     int& error) override;
   void Close() override;
 
   // Seek to a byte offset from the beginning of the stream.  Returns false if
@@ -81,9 +78,9 @@ class FifoBuffer final : public StreamInterface {
 
  private:
   void PostEvent(int events, int err) {
-    owner_->PostTask(webrtc::ToQueuedTask(task_safety_, [this, events, err]() {
-      SignalEvent(this, events, err);
-    }));
+    owner_->PostTask(webrtc::SafeTask(
+        task_safety_.flag(),
+        [this, events, err]() { SignalEvent(this, events, err); }));
   }
 
   // Helper method that implements Read. Caller must acquire a lock

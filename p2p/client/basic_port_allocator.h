@@ -15,7 +15,9 @@
 #include <string>
 #include <vector>
 
+#include "absl/strings/string_view.h"
 #include "api/field_trials_view.h"
+#include "api/task_queue/pending_task_safety_flag.h"
 #include "api/turn_customizer.h"
 #include "p2p/base/port_allocator.h"
 #include "p2p/client/relay_port_factory_interface.h"
@@ -24,7 +26,6 @@
 #include "rtc_base/memory/always_valid_pointer.h"
 #include "rtc_base/network.h"
 #include "rtc_base/system/rtc_export.h"
-#include "rtc_base/task_utils/pending_task_safety_flag.h"
 #include "rtc_base/thread.h"
 #include "rtc_base/thread_annotations.h"
 
@@ -38,17 +39,21 @@ class RTC_EXPORT BasicPortAllocator : public PortAllocator {
   BasicPortAllocator(rtc::NetworkManager* network_manager,
                      rtc::PacketSocketFactory* socket_factory,
                      webrtc::TurnCustomizer* customizer = nullptr,
-                     RelayPortFactoryInterface* relay_port_factory = nullptr);
-  BasicPortAllocator(
-      rtc::NetworkManager* network_manager,
-      std::unique_ptr<rtc::PacketSocketFactory> owned_socket_factory);
+                     RelayPortFactoryInterface* relay_port_factory = nullptr,
+                     const webrtc::FieldTrialsView* field_trials = nullptr);
   BasicPortAllocator(
       rtc::NetworkManager* network_manager,
       std::unique_ptr<rtc::PacketSocketFactory> owned_socket_factory,
-      const ServerAddresses& stun_servers);
+      const webrtc::FieldTrialsView* field_trials = nullptr);
+  BasicPortAllocator(
+      rtc::NetworkManager* network_manager,
+      std::unique_ptr<rtc::PacketSocketFactory> owned_socket_factory,
+      const ServerAddresses& stun_servers,
+      const webrtc::FieldTrialsView* field_trials = nullptr);
   BasicPortAllocator(rtc::NetworkManager* network_manager,
                      rtc::PacketSocketFactory* socket_factory,
-                     const ServerAddresses& stun_servers);
+                     const ServerAddresses& stun_servers,
+                     const webrtc::FieldTrialsView* field_trials = nullptr);
   ~BasicPortAllocator() override;
 
   // Set to kDefaultNetworkIgnoreMask by default.
@@ -68,13 +73,13 @@ class RTC_EXPORT BasicPortAllocator : public PortAllocator {
   }
 
   PortAllocatorSession* CreateSessionInternal(
-      const std::string& content_name,
+      absl::string_view content_name,
       int component,
-      const std::string& ice_ufrag,
-      const std::string& ice_pwd) override;
+      absl::string_view ice_ufrag,
+      absl::string_view ice_pwd) override;
 
   // Convenience method that adds a TURN server to the configuration.
-  void AddTurnServer(const RelayServerConfig& turn_server);
+  void AddTurnServerForTesting(const RelayServerConfig& turn_server);
 
   RelayPortFactoryInterface* relay_port_factory() {
     CheckRunOnValidThreadIfInitialized();
@@ -83,21 +88,22 @@ class RTC_EXPORT BasicPortAllocator : public PortAllocator {
 
   void SetVpnList(const std::vector<rtc::NetworkMask>& vpn_list) override;
 
-  const webrtc::FieldTrialsView* field_trials() const { return field_trials_; }
+  const webrtc::FieldTrialsView* field_trials() const {
+    return field_trials_.get();
+  }
 
  private:
   void OnIceRegathering(PortAllocatorSession* session,
                         IceRegatheringReason reason);
 
-  // This function makes sure that relay_port_factory_ and field_trials_ is set
-  // properly.
-  void Init(RelayPortFactoryInterface* relay_port_factory,
-            const webrtc::FieldTrialsView* field_trials);
+  // This function makes sure that relay_port_factory_ is set properly.
+  void Init(RelayPortFactoryInterface* relay_port_factory);
 
   bool MdnsObfuscationEnabled() const override;
 
-  const webrtc::FieldTrialsView* field_trials_;
-  std::unique_ptr<webrtc::FieldTrialsView> owned_field_trials_;
+  webrtc::AlwaysValidPointer<const webrtc::FieldTrialsView,
+                             webrtc::FieldTrialBasedConfig>
+      field_trials_;
   rtc::NetworkManager* network_manager_;
   const webrtc::AlwaysValidPointerNoDefault<rtc::PacketSocketFactory>
       socket_factory_;
@@ -126,10 +132,10 @@ enum class SessionState {
 class RTC_EXPORT BasicPortAllocatorSession : public PortAllocatorSession {
  public:
   BasicPortAllocatorSession(BasicPortAllocator* allocator,
-                            const std::string& content_name,
+                            absl::string_view content_name,
                             int component,
-                            const std::string& ice_ufrag,
-                            const std::string& ice_pwd);
+                            absl::string_view ice_ufrag,
+                            absl::string_view ice_pwd);
   ~BasicPortAllocatorSession() override;
 
   virtual BasicPortAllocator* allocator();
@@ -162,6 +168,9 @@ class RTC_EXPORT BasicPortAllocatorSession : public PortAllocatorSession {
   void SetStunKeepaliveIntervalForReadyPorts(
       const absl::optional<int>& stun_keepalive_interval) override;
   void PruneAllPorts() override;
+  static std::vector<const rtc::Network*> SelectIPv6Networks(
+      std::vector<const rtc::Network*>& all_ipv6_networks,
+      int max_ipv6_networks);
 
  protected:
   void UpdateIceParametersInternal() override;
@@ -269,7 +278,7 @@ class RTC_EXPORT BasicPortAllocatorSession : public PortAllocatorSession {
   // append to `candidates`.
   void GetCandidatesFromPort(const PortData& data,
                              std::vector<Candidate>* candidates) const;
-  Port* GetBestTurnPortForNetwork(const std::string& network_name) const;
+  Port* GetBestTurnPortForNetwork(absl::string_view network_name) const;
   // Returns true if at least one TURN port is pruned.
   bool PruneTurnPorts(Port* newly_pairable_turn_port);
   bool PruneNewlyPairableTurnPort(PortData* newly_pairable_turn_port);
@@ -308,8 +317,8 @@ struct RTC_EXPORT PortConfiguration {
   RelayList relays;
 
   PortConfiguration(const ServerAddresses& stun_servers,
-                    const std::string& username,
-                    const std::string& password,
+                    absl::string_view username,
+                    absl::string_view password,
                     const webrtc::FieldTrialsView* field_trials = nullptr);
 
   // Returns addresses of both the explicitly configured STUN servers,
@@ -377,11 +386,9 @@ class AllocationSequence : public sigslot::has_slots<> {
   void Start();
   void Stop();
 
- protected:
-  // For testing.
-  void CreateTurnPort(const RelayServerConfig& config);
-
  private:
+  void CreateTurnPort(const RelayServerConfig& config, int relative_priority);
+
   typedef std::vector<ProtocolType> ProtocolList;
 
   void Process(int epoch);

@@ -16,6 +16,7 @@
 #include <string>
 #include <vector>
 
+#include "absl/strings/string_view.h"
 #include "absl/types/optional.h"
 #include "api/candidate.h"
 #include "api/rtc_error.h"
@@ -227,12 +228,6 @@ enum class IceTransportState {
   STATE_FAILED
 };
 
-// TODO(zhihuang): Remove this once it's no longer used in
-// remoting/protocol/libjingle_transport_factory.cc
-enum IceProtocolType {
-  ICEPROTO_RFC5245  // Standard RFC 5245 version of ICE.
-};
-
 // IceTransportInternal is an internal abstract class that does ICE.
 // Once the public interface is supported,
 // (https://www.w3.org/TR/webrtc/#rtcicetransport)
@@ -255,15 +250,11 @@ class RTC_EXPORT IceTransportInternal : public rtc::PacketTransportInternal {
 
   virtual void SetIceTiebreaker(uint64_t tiebreaker) = 0;
 
-  // TODO(zhihuang): Remove this once it's no longer called in
-  // remoting/protocol/libjingle_transport_factory.cc
-  virtual void SetIceProtocolType(IceProtocolType type) {}
+  virtual void SetIceCredentials(absl::string_view ice_ufrag,
+                                 absl::string_view ice_pwd);
 
-  virtual void SetIceCredentials(const std::string& ice_ufrag,
-                                 const std::string& ice_pwd);
-
-  virtual void SetRemoteIceCredentials(const std::string& ice_ufrag,
-                                       const std::string& ice_pwd);
+  virtual void SetRemoteIceCredentials(absl::string_view ice_ufrag,
+                                       absl::string_view ice_pwd);
 
   // The ufrag and pwd in `ice_params` must be set
   // before candidate gathering can start.

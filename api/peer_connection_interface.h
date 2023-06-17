@@ -94,6 +94,7 @@
 #include "api/field_trials_view.h"
 #include "api/ice_transport_interface.h"
 #include "api/jsep.h"
+#include "api/legacy_stats_types.h"
 #include "api/media_stream_interface.h"
 #include "api/media_types.h"
 #include "api/metronome/metronome.h"
@@ -112,7 +113,6 @@
 #include "api/set_local_description_observer_interface.h"
 #include "api/set_remote_description_observer_interface.h"
 #include "api/stats/rtc_stats_collector_callback.h"
-#include "api/stats_types.h"
 #include "api/task_queue/task_queue_factory.h"
 #include "api/transport/bitrate_settings.h"
 #include "api/transport/enums.h"
@@ -125,9 +125,8 @@
 #include "media/base/media_engine.h"
 // TODO(bugs.webrtc.org/7447): We plan to provide a way to let applications
 // inject a PacketSocketFactory and/or NetworkManager, and not expose
-// PortAllocator in the PeerConnection api. This will let us remove nogncheck.
-#include "p2p/base/port.h"            // nogncheck
-#include "p2p/base/port_allocator.h"  // nogncheck
+// PortAllocator in the PeerConnection api.
+#include "p2p/base/port_allocator.h"
 #include "rtc_base/network.h"
 #include "rtc_base/network_constants.h"
 #include "rtc_base/network_monitor_factory.h"
@@ -427,11 +426,6 @@ class RTC_EXPORT PeerConnectionInterface : public rtc::RefCountInterface {
     // default will be used.
     //////////////////////////////////////////////////////////////////////////
 
-    // If set to true, don't gather IPv6 ICE candidates.
-    // TODO(https://crbug.com/1315576): Remove the ability to set it in Chromium
-    // and delete this flag.
-    bool disable_ipv6 = false;
-
     // If set to true, don't gather IPv6 ICE candidates on Wi-Fi.
     // Only intended to be used on specific devices. Certain phones disable IPv6
     // when the screen is turned off and it would be better to just disable the
@@ -694,6 +688,9 @@ class RTC_EXPORT PeerConnectionInterface : public rtc::RefCountInterface {
 
     PortAllocatorConfig port_allocator_config;
 
+    // The burst interval of the pacer, see TaskQueuePacedSender constructor.
+    absl::optional<TimeDelta> pacer_burst_interval;
+
     //
     // Don't forget to update operator== if adding something.
     //
@@ -804,6 +801,16 @@ class RTC_EXPORT PeerConnectionInterface : public rtc::RefCountInterface {
   virtual RTCErrorOr<rtc::scoped_refptr<RtpSenderInterface>> AddTrack(
       rtc::scoped_refptr<MediaStreamTrackInterface> track,
       const std::vector<std::string>& stream_ids) = 0;
+
+  // Add a new MediaStreamTrack as above, but with an additional parameter,
+  // `init_send_encodings` : initial RtpEncodingParameters for RtpSender,
+  // similar to init_send_encodings in RtpTransceiverInit.
+  // Note that a new transceiver will always be created.
+  //
+  virtual RTCErrorOr<rtc::scoped_refptr<RtpSenderInterface>> AddTrack(
+      rtc::scoped_refptr<MediaStreamTrackInterface> track,
+      const std::vector<std::string>& stream_ids,
+      const std::vector<RtpEncodingParameters>& init_send_encodings) = 0;
 
   // Removes the connection between a MediaStreamTrack and the PeerConnection.
   // Stops sending on the RtpSender and marks the
@@ -951,8 +958,6 @@ class RTC_EXPORT PeerConnectionInterface : public rtc::RefCountInterface {
       rtc::scoped_refptr<RtpReceiverInterface> selector,
       rtc::scoped_refptr<RTCStatsCollectorCallback> callback) = 0;
   // Clear cached stats in the RTCStatsCollector.
-  // Exposed for testing while waiting for automatic cache clear to work.
-  // https://bugs.webrtc.org/8693
   virtual void ClearStatsCache() {}
 
   // Create a data channel with the provided config, or default config if none
@@ -1107,11 +1112,8 @@ class RTC_EXPORT PeerConnectionInterface : public rtc::RefCountInterface {
   // - SYNTAX_ERROR if parsing an ICE server URL failed.
   // - INVALID_PARAMETER if a TURN server is missing `username` or `password`.
   // - INTERNAL_ERROR if an unexpected error occurred.
-  //
-  // TODO(nisse): Make this pure virtual once all Chrome subclasses of
-  // PeerConnectionInterface implement it.
   virtual RTCError SetConfiguration(
-      const PeerConnectionInterface::RTCConfiguration& config);
+      const PeerConnectionInterface::RTCConfiguration& config) = 0;
 
   // Provides a remote candidate to the ICE Agent.
   // A copy of the `candidate` will be created and added to the remote
@@ -1380,10 +1382,9 @@ struct RTC_EXPORT PeerConnectionDependencies final {
   PeerConnectionObserver* observer = nullptr;
   // Optional dependencies
   // TODO(bugs.webrtc.org/7447): remove port allocator once downstream is
-  // updated. For now, you can only set one of allocator and
-  // packet_socket_factory, not both.
+  // updated. The recommended way to inject networking components is to pass a
+  // PacketSocketFactory when creating the PeerConnectionFactory.
   std::unique_ptr<cricket::PortAllocator> allocator;
-  std::unique_ptr<rtc::PacketSocketFactory> packet_socket_factory;
   // Factory for creating resolvers that look up hostnames in DNS
   std::unique_ptr<webrtc::AsyncDnsResolverFactoryInterface>
       async_dns_resolver_factory;
@@ -1423,6 +1424,9 @@ struct RTC_EXPORT PeerConnectionFactoryDependencies final {
   rtc::Thread* worker_thread = nullptr;
   rtc::Thread* signaling_thread = nullptr;
   rtc::SocketFactory* socket_factory = nullptr;
+  // The `packet_socket_factory` will only be used if CreatePeerConnection is
+  // called without a `port_allocator`.
+  std::unique_ptr<rtc::PacketSocketFactory> packet_socket_factory;
   std::unique_ptr<TaskQueueFactory> task_queue_factory;
   std::unique_ptr<cricket::MediaEngineInterface> media_engine;
   std::unique_ptr<CallFactoryInterface> call_factory;
@@ -1431,9 +1435,12 @@ struct RTC_EXPORT PeerConnectionFactoryDependencies final {
   std::unique_ptr<NetworkStatePredictorFactoryInterface>
       network_state_predictor_factory;
   std::unique_ptr<NetworkControllerFactoryInterface> network_controller_factory;
-  // This will only be used if CreatePeerConnection is called without a
-  // `port_allocator`, causing the default allocator and network manager to be
-  // used.
+  // The `network_manager` will only be used if CreatePeerConnection is called
+  // without a `port_allocator`, causing the default allocator and network
+  // manager to be used.
+  std::unique_ptr<rtc::NetworkManager> network_manager;
+  // The `network_monitor_factory` will only be used if CreatePeerConnection is
+  // called without a `port_allocator`, and the above `network_manager' is null.
   std::unique_ptr<rtc::NetworkMonitorFactory> network_monitor_factory;
   std::unique_ptr<NetEqFactory> neteq_factory;
   std::unique_ptr<SctpTransportFactoryInterface> sctp_factory;
@@ -1546,8 +1553,15 @@ class RTC_EXPORT PeerConnectionFactoryInterface
   // Creates a new local VideoTrack. The same `source` can be used in several
   // tracks.
   virtual rtc::scoped_refptr<VideoTrackInterface> CreateVideoTrack(
+      rtc::scoped_refptr<VideoTrackSourceInterface> source,
+      absl::string_view label) = 0;
+  ABSL_DEPRECATED("Use version with scoped_refptr")
+  virtual rtc::scoped_refptr<VideoTrackInterface> CreateVideoTrack(
       const std::string& label,
-      VideoTrackSourceInterface* source) = 0;
+      VideoTrackSourceInterface* source) {
+    return CreateVideoTrack(
+        rtc::scoped_refptr<VideoTrackSourceInterface>(source), label);
+  }
 
   // Creates an new AudioTrack. At the moment `source` can be null.
   virtual rtc::scoped_refptr<AudioTrackInterface> CreateAudioTrack(

@@ -178,18 +178,6 @@ rtc_library("rtt_mult_experiment") {
   absl_deps = [ "//third_party/abseil-cpp/absl/types:optional" ]
 }
 
-rtc_library("jitter_upper_bound_experiment") {
-  sources = [
-    "jitter_upper_bound_experiment.cc",
-    "jitter_upper_bound_experiment.h",
-  ]
-  deps = [
-    "..:logging",
-    "../../system_wrappers:field_trial",
-  ]
-  absl_deps = [ "//third_party/abseil-cpp/absl/types:optional" ]
-}
-
 rtc_library("rate_control_settings") {
   sources = [
     "rate_control_settings.cc",
@@ -204,6 +192,7 @@ rtc_library("rate_control_settings") {
     "../../api/units:data_size",
     "../../api/video_codecs:video_codecs_api",
     "../../system_wrappers:field_trial",
+    "../../video/config:encoder_config",
   ]
   absl_deps = [
     "//third_party/abseil-cpp/absl/strings",
@@ -231,7 +220,6 @@ rtc_library("stable_target_rate_experiment") {
   ]
   deps = [
     ":field_trial_parser",
-    ":rate_control_settings",
     "../../api:field_trials_view",
     "../../api/transport:field_trial_based_config",
   ]
@@ -302,6 +290,7 @@ if (rtc_include_tests && !build_with_chromium) {
       "../../test:scoped_key_value_config",
       "../../test:test_main",
       "../../test:test_support",
+      "../../video/config:encoder_config",
     ]
     absl_deps = [
       "//third_party/abseil-cpp/absl/strings",

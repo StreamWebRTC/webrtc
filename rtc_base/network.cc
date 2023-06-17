@@ -11,6 +11,7 @@
 #include "rtc_base/network.h"
 
 #include "absl/strings/string_view.h"
+#include "rtc_base/experiments/field_trial_parser.h"
 
 #if defined(WEBRTC_POSIX)
 #include <net/if.h>
@@ -30,7 +31,9 @@
 #include "absl/memory/memory.h"
 #include "absl/strings/match.h"
 #include "absl/strings/string_view.h"
+#include "api/task_queue/pending_task_safety_flag.h"
 #include "api/transport/field_trial_based_config.h"
+#include "api/units/time_delta.h"
 #include "rtc_base/checks.h"
 #include "rtc_base/logging.h"
 #include "rtc_base/memory/always_valid_pointer.h"
@@ -39,16 +42,19 @@
 #include "rtc_base/string_encode.h"
 #include "rtc_base/string_utils.h"
 #include "rtc_base/strings/string_builder.h"
-#include "rtc_base/task_utils/to_queued_task.h"
 #include "rtc_base/thread.h"
 
 namespace rtc {
 namespace {
+using ::webrtc::SafeTask;
+using ::webrtc::TimeDelta;
 
 // List of MAC addresses of known VPN (for windows).
-constexpr uint8_t kVpns[2][6] = {
-    // Cisco AnyConnect.
+constexpr uint8_t kVpns[3][6] = {
+    // Cisco AnyConnect SSL VPN Client.
     {0x0, 0x5, 0x9A, 0x3C, 0x7A, 0x0},
+    // Cisco AnyConnect IPSEC VPN Client.
+    {0x0, 0x5, 0x9A, 0x3C, 0x78, 0x0},
     // GlobalProtect Virtual Ethernet.
     {0x2, 0x50, 0x41, 0x0, 0x0, 0x1},
 };
@@ -148,16 +154,19 @@ bool IsIgnoredIPv6(bool allow_mac_based_ipv6, const InterfaceAddress& ip) {
   // However, our IPAddress structure doesn't carry that so the
   // information is lost and causes binding failure.
   if (IPIsLinkLocal(ip)) {
+    RTC_LOG(LS_VERBOSE) << "Ignore link local IP:" << ip.ToSensitiveString();
     return true;
   }
 
   // Any MAC based IPv6 should be avoided to prevent the MAC tracking.
   if (IPIsMacBased(ip) && !allow_mac_based_ipv6) {
+    RTC_LOG(LS_INFO) << "Ignore Mac based IP:" << ip.ToSensitiveString();
     return true;
   }
 
   // Ignore deprecated IPv6.
   if (ip.ipv6_flags() & IPV6_ADDRESS_FLAG_DEPRECATED) {
+    RTC_LOG(LS_INFO) << "Ignore deprecated IP:" << ip.ToSensitiveString();
     return true;
   }
 
@@ -176,6 +185,22 @@ bool ShouldAdapterChangeTriggerNetworkChange(rtc::AdapterType old_type,
     return false;
   return true;
 }
+
+#if defined(WEBRTC_WIN)
+bool IpAddressAttributesEnabled(const webrtc::FieldTrialsView* field_trials) {
+  // Field trial key reserved in bugs.webrtc.org/14334
+  if (field_trials &&
+      field_trials->IsEnabled("WebRTC-IPv6NetworkResolutionFixes")) {
+    webrtc::FieldTrialParameter<bool> ip_address_attributes_enabled(
+        "IpAddressAttributesEnabled", false);
+    webrtc::ParseFieldTrial(
+        {&ip_address_attributes_enabled},
+        field_trials->Lookup("WebRTC-IPv6NetworkResolutionFixes"));
+    return ip_address_attributes_enabled;
+  }
+  return false;
+}
+#endif  // WEBRTC_WIN
 
 }  // namespace
 
@@ -261,7 +286,8 @@ AdapterType GetAdapterTypeFromName(absl::string_view network_name) {
       MatchTypeNameWithIndexPattern(network_name, "rmnet_data") ||
       MatchTypeNameWithIndexPattern(network_name, "v4-rmnet") ||
       MatchTypeNameWithIndexPattern(network_name, "v4-rmnet_data") ||
-      MatchTypeNameWithIndexPattern(network_name, "clat")) {
+      MatchTypeNameWithIndexPattern(network_name, "clat") ||
+      MatchTypeNameWithIndexPattern(network_name, "ccmni")) {
     return ADAPTER_TYPE_CELLULAR;
   }
 #endif
@@ -284,7 +310,8 @@ webrtc::MdnsResponderInterface* NetworkManager::GetMdnsResponder() const {
 
 NetworkManagerBase::NetworkManagerBase(
     const webrtc::FieldTrialsView* field_trials)
-    : enumeration_permission_(NetworkManager::ENUMERATION_ALLOWED),
+    : field_trials_(field_trials),
+      enumeration_permission_(NetworkManager::ENUMERATION_ALLOWED),
       signal_network_preference_change_(
           field_trials
               ? field_trials->IsEnabled("WebRTC-SignalNetworkPreferenceChange")
@@ -295,12 +322,22 @@ NetworkManagerBase::enumeration_permission() const {
   return enumeration_permission_;
 }
 
+std::unique_ptr<Network> NetworkManagerBase::CreateNetwork(
+    absl::string_view name,
+    absl::string_view description,
+    const IPAddress& prefix,
+    int prefix_length,
+    AdapterType type) const {
+  return std::make_unique<Network>(name, description, prefix, prefix_length,
+                                   type);
+}
+
 std::vector<const Network*> NetworkManagerBase::GetAnyAddressNetworks() {
   std::vector<const Network*> networks;
   if (!ipv4_any_address_network_) {
     const rtc::IPAddress ipv4_any_address(INADDR_ANY);
-    ipv4_any_address_network_ = std::make_unique<Network>(
-        "any", "any", ipv4_any_address, 0, ADAPTER_TYPE_ANY);
+    ipv4_any_address_network_ =
+        CreateNetwork("any", "any", ipv4_any_address, 0, ADAPTER_TYPE_ANY);
     ipv4_any_address_network_->set_default_local_address_provider(this);
     ipv4_any_address_network_->set_mdns_responder_provider(this);
     ipv4_any_address_network_->AddIP(ipv4_any_address);
@@ -309,8 +346,8 @@ std::vector<const Network*> NetworkManagerBase::GetAnyAddressNetworks() {
 
   if (!ipv6_any_address_network_) {
     const rtc::IPAddress ipv6_any_address(in6addr_any);
-    ipv6_any_address_network_ = std::make_unique<Network>(
-        "any", "any", ipv6_any_address, 0, ADAPTER_TYPE_ANY);
+    ipv6_any_address_network_ =
+        CreateNetwork("any", "any", ipv6_any_address, 0, ADAPTER_TYPE_ANY);
     ipv6_any_address_network_->set_default_local_address_provider(this);
     ipv6_any_address_network_->set_mdns_responder_provider(this);
     ipv6_any_address_network_->AddIP(ipv6_any_address);
@@ -510,14 +547,17 @@ bool NetworkManagerBase::IsVpnMacAddress(
 BasicNetworkManager::BasicNetworkManager(
     NetworkMonitorFactory* network_monitor_factory,
     SocketFactory* socket_factory,
-    const webrtc::FieldTrialsView* field_trials)
-    : field_trials_(field_trials),
+    const webrtc::FieldTrialsView* field_trials_view)
+    : NetworkManagerBase(field_trials_view),
+      field_trials_(field_trials_view),
       network_monitor_factory_(network_monitor_factory),
       socket_factory_(socket_factory),
       allow_mac_based_ipv6_(
-          field_trials_->IsEnabled("WebRTC-AllowMACBasedIPv6")),
+          field_trials()->IsEnabled("WebRTC-AllowMACBasedIPv6")),
       bind_using_ifname_(
-          !field_trials_->IsDisabled("WebRTC-BindUsingInterfaceName")) {}
+          !field_trials()->IsDisabled("WebRTC-BindUsingInterfaceName")) {
+  RTC_DCHECK(socket_factory_);
+}
 
 BasicNetworkManager::~BasicNetworkManager() {
   if (task_safety_flag_) {
@@ -579,10 +619,6 @@ void BasicNetworkManager::ConvertIfAddrs(
     if (!cursor->ifa_addr || !cursor->ifa_netmask) {
       continue;
     }
-    // Skip ones which are down.
-    if (!(cursor->ifa_flags & IFF_RUNNING)) {
-      continue;
-    }
     // Skip unknown family.
     if (cursor->ifa_addr->sa_family != AF_INET &&
         cursor->ifa_addr->sa_family != AF_INET6) {
@@ -591,6 +627,12 @@ void BasicNetworkManager::ConvertIfAddrs(
     // Convert to InterfaceAddress.
     // TODO(webrtc:13114): Convert ConvertIfAddrs to use rtc::Netmask.
     if (!ifaddrs_converter->ConvertIfAddrsToIPAddress(cursor, &ip, &mask)) {
+      continue;
+    }
+    // Skip ones which are down.
+    if (!(cursor->ifa_flags & IFF_RUNNING)) {
+      RTC_LOG(LS_INFO) << "Skip interface because of not IFF_RUNNING: "
+                       << ip.ToSensitiveString();
       continue;
     }
 
@@ -645,9 +687,8 @@ void BasicNetworkManager::ConvertIfAddrs(
       if_info.adapter_type = ADAPTER_TYPE_VPN;
     }
 
-    auto network =
-        std::make_unique<Network>(cursor->ifa_name, cursor->ifa_name, prefix,
-                                  prefix_length, if_info.adapter_type);
+    auto network = CreateNetwork(cursor->ifa_name, cursor->ifa_name, prefix,
+                                 prefix_length, if_info.adapter_type);
     network->set_default_local_address_provider(this);
     network->set_scope_id(scope_id);
     network->AddIP(ip);
@@ -778,12 +819,27 @@ bool BasicNetworkManager::CreateNetworks(
             sockaddr_in6* v6_addr =
                 reinterpret_cast<sockaddr_in6*>(address->Address.lpSockaddr);
             scope_id = v6_addr->sin6_scope_id;
-            ip = IPAddress(v6_addr->sin6_addr);
 
-            if (IsIgnoredIPv6(allow_mac_based_ipv6_, InterfaceAddress(ip))) {
+            // From http://technet.microsoft.com/en-us/ff568768(v=vs.60).aspx,
+            // the way to identify a temporary IPv6 Address is to check if
+            // PrefixOrigin is equal to IpPrefixOriginRouterAdvertisement and
+            // SuffixOrigin equal to IpSuffixOriginRandom.
+            int ip_address_attributes = IPV6_ADDRESS_FLAG_NONE;
+            if (IpAddressAttributesEnabled(field_trials_.get())) {
+              if (address->PrefixOrigin == IpPrefixOriginRouterAdvertisement &&
+                  address->SuffixOrigin == IpSuffixOriginRandom) {
+                ip_address_attributes |= IPV6_ADDRESS_FLAG_TEMPORARY;
+              }
+              if (address->PreferredLifetime == 0) {
+                ip_address_attributes |= IPV6_ADDRESS_FLAG_DEPRECATED;
+              }
+            }
+            if (IsIgnoredIPv6(allow_mac_based_ipv6_,
+                              InterfaceAddress(v6_addr->sin6_addr,
+                                               ip_address_attributes))) {
               continue;
             }
-
+            ip = InterfaceAddress(v6_addr->sin6_addr, ip_address_attributes);
             break;
           }
           default: {
@@ -832,12 +888,14 @@ bool BasicNetworkManager::CreateNetworks(
                   reinterpret_cast<const uint8_t*>(
                       adapter_addrs->PhysicalAddress),
                   adapter_addrs->PhysicalAddressLength))) {
-            underlying_type_for_vpn = adapter_type;
+            // With MAC-based detection we do not know the
+            // underlying adapter type.
+            underlying_type_for_vpn = ADAPTER_TYPE_UNKNOWN;
             adapter_type = ADAPTER_TYPE_VPN;
           }
 
-          auto network = std::make_unique<Network>(name, description, prefix,
-                                                   prefix_length, adapter_type);
+          auto network = CreateNetwork(name, description, prefix, prefix_length,
+                                       adapter_type);
           network->set_underlying_type_for_vpn(underlying_type_for_vpn);
           network->set_default_local_address_provider(this);
           network->set_mdns_responder_provider(this);
@@ -906,14 +964,14 @@ void BasicNetworkManager::StartUpdating() {
     // we should trigger network signal immediately for the new clients
     // to start allocating ports.
     if (sent_first_update_)
-      thread_->PostTask(ToQueuedTask(task_safety_flag_, [this] {
+      thread_->PostTask(SafeTask(task_safety_flag_, [this] {
         RTC_DCHECK_RUN_ON(thread_);
         SignalNetworksChanged();
       }));
   } else {
     RTC_DCHECK(task_safety_flag_ == nullptr);
     task_safety_flag_ = webrtc::PendingTaskSafetyFlag::Create();
-    thread_->PostTask(ToQueuedTask(task_safety_flag_, [this] {
+    thread_->PostTask(SafeTask(task_safety_flag_, [this] {
       RTC_DCHECK_RUN_ON(thread_);
       UpdateNetworksContinually();
     }));
@@ -942,7 +1000,7 @@ void BasicNetworkManager::StartNetworkMonitor() {
   }
   if (!network_monitor_) {
     network_monitor_.reset(
-        network_monitor_factory_->CreateNetworkMonitor(*field_trials_));
+        network_monitor_factory_->CreateNetworkMonitor(*field_trials()));
     if (!network_monitor_) {
       return;
     }
@@ -978,16 +1036,8 @@ void BasicNetworkManager::StopNetworkMonitor() {
 IPAddress BasicNetworkManager::QueryDefaultLocalAddress(int family) const {
   RTC_DCHECK(family == AF_INET || family == AF_INET6);
 
-  // TODO(bugs.webrtc.org/13145): Delete support for null `socket_factory_`,
-  // require socket factory to be provided to constructor.
-  SocketFactory* socket_factory = socket_factory_;
-  if (!socket_factory) {
-    socket_factory = thread_->socketserver();
-  }
-  RTC_DCHECK(socket_factory);
-
   std::unique_ptr<Socket> socket(
-      socket_factory->CreateSocket(family, SOCK_DGRAM));
+      socket_factory_->CreateSocket(family, SOCK_DGRAM));
   if (!socket) {
     RTC_LOG_ERR(LS_ERROR) << "Socket creation failed";
     return IPAddress();
@@ -1029,12 +1079,12 @@ void BasicNetworkManager::UpdateNetworksOnce() {
 
 void BasicNetworkManager::UpdateNetworksContinually() {
   UpdateNetworksOnce();
-  thread_->PostDelayedTask(ToQueuedTask(task_safety_flag_,
-                                        [this] {
-                                          RTC_DCHECK_RUN_ON(thread_);
-                                          UpdateNetworksContinually();
-                                        }),
-                           kNetworksUpdateIntervalMs);
+  thread_->PostDelayedTask(SafeTask(task_safety_flag_,
+                                    [this] {
+                                      RTC_DCHECK_RUN_ON(thread_);
+                                      UpdateNetworksContinually();
+                                    }),
+                           TimeDelta::Millis(kNetworksUpdateIntervalMs));
 }
 
 void BasicNetworkManager::DumpNetworks() {
@@ -1110,12 +1160,17 @@ IPAddress Network::GetBestIP() const {
     return static_cast<IPAddress>(ips_.at(0));
   }
 
-  InterfaceAddress selected_ip, ula_ip;
+  InterfaceAddress selected_ip, link_local_ip, ula_ip;
 
   for (const InterfaceAddress& ip : ips_) {
     // Ignore any address which has been deprecated already.
     if (ip.ipv6_flags() & IPV6_ADDRESS_FLAG_DEPRECATED)
       continue;
+
+    if (IPIsLinkLocal(ip)) {
+      link_local_ip = ip;
+      continue;
+    }
 
     // ULA address should only be returned when we have no other
     // global IP.
@@ -1130,9 +1185,14 @@ IPAddress Network::GetBestIP() const {
       break;
   }
 
-  // No proper global IPv6 address found, use ULA instead.
-  if (IPIsUnspec(selected_ip) && !IPIsUnspec(ula_ip)) {
-    selected_ip = ula_ip;
+  if (IPIsUnspec(selected_ip)) {
+    if (!IPIsUnspec(link_local_ip)) {
+      // No proper global IPv6 address found, use link local address instead.
+      selected_ip = link_local_ip;
+    } else if (!IPIsUnspec(ula_ip)) {
+      // No proper global and link local address found, use ULA instead.
+      selected_ip = ula_ip;
+    }
   }
 
   return static_cast<IPAddress>(selected_ip);
@@ -1225,7 +1285,7 @@ void BasicNetworkManager::set_vpn_list(const std::vector<NetworkMask>& vpn) {
   if (thread_ == nullptr) {
     vpn_ = vpn;
   } else {
-    thread_->Invoke<void>(RTC_FROM_HERE, [this, vpn] { vpn_ = vpn; });
+    thread_->BlockingCall([this, vpn] { vpn_ = vpn; });
   }
 }
 

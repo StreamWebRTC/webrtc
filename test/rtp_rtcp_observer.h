@@ -17,6 +17,7 @@
 
 #include "api/array_view.h"
 #include "api/test/simulated_network.h"
+#include "api/units/time_delta.h"
 #include "call/simulated_packet_receiver.h"
 #include "call/video_send_stream.h"
 #include "modules/rtp_rtcp/source/rtp_util.h"
@@ -26,7 +27,7 @@
 #include "test/gtest.h"
 
 namespace {
-const int kShortTimeoutMs = 500;
+constexpr webrtc::TimeDelta kShortTimeout = webrtc::TimeDelta::Millis(500);
 }
 
 namespace webrtc {
@@ -45,10 +46,10 @@ class RtpRtcpObserver {
 
   virtual bool Wait() {
     if (field_trial::IsEnabled("WebRTC-QuickPerfTest")) {
-      observation_complete_.Wait(kShortTimeoutMs);
+      observation_complete_.Wait(kShortTimeout);
       return true;
     }
-    return observation_complete_.Wait(timeout_ms_);
+    return observation_complete_.Wait(timeout_);
   }
 
   virtual Action OnSendRtp(const uint8_t* packet, size_t length) {
@@ -68,14 +69,13 @@ class RtpRtcpObserver {
   }
 
  protected:
-  RtpRtcpObserver() : RtpRtcpObserver(0) {}
-  explicit RtpRtcpObserver(int event_timeout_ms)
-      : timeout_ms_(event_timeout_ms) {}
+  RtpRtcpObserver() : RtpRtcpObserver(TimeDelta::Zero()) {}
+  explicit RtpRtcpObserver(TimeDelta event_timeout) : timeout_(event_timeout) {}
 
   rtc::Event observation_complete_;
 
  private:
-  const int timeout_ms_;
+  const TimeDelta timeout_;
 };
 
 class PacketTransport : public test::DirectTransport {
@@ -87,11 +87,15 @@ class PacketTransport : public test::DirectTransport {
                   RtpRtcpObserver* observer,
                   TransportType transport_type,
                   const std::map<uint8_t, MediaType>& payload_type_map,
-                  std::unique_ptr<SimulatedPacketReceiverInterface> nw_pipe)
+                  std::unique_ptr<SimulatedPacketReceiverInterface> nw_pipe,
+                  rtc::ArrayView<const RtpExtension> audio_extensions,
+                  rtc::ArrayView<const RtpExtension> video_extensions)
       : test::DirectTransport(task_queue,
                               std::move(nw_pipe),
                               send_call,
-                              payload_type_map),
+                              payload_type_map,
+                              audio_extensions,
+                              video_extensions),
         observer_(observer),
         transport_type_(transport_type) {}
 
@@ -100,8 +104,8 @@ class PacketTransport : public test::DirectTransport {
                size_t length,
                const PacketOptions& options) override {
     EXPECT_TRUE(IsRtpPacket(rtc::MakeArrayView(packet, length)));
-    RtpRtcpObserver::Action action;
-    {
+    RtpRtcpObserver::Action action = RtpRtcpObserver::SEND_PACKET;
+    if (observer_) {
       if (transport_type_ == kSender) {
         action = observer_->OnSendRtp(packet, length);
       } else {
@@ -120,8 +124,8 @@ class PacketTransport : public test::DirectTransport {
 
   bool SendRtcp(const uint8_t* packet, size_t length) override {
     EXPECT_TRUE(IsRtcpPacket(rtc::MakeArrayView(packet, length)));
-    RtpRtcpObserver::Action action;
-    {
+    RtpRtcpObserver::Action action = RtpRtcpObserver::SEND_PACKET;
+    if (observer_) {
       if (transport_type_ == kSender) {
         action = observer_->OnSendRtcp(packet, length);
       } else {

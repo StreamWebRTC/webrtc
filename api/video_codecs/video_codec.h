@@ -44,6 +44,11 @@ struct VideoCodecVP8 {
   bool operator!=(const VideoCodecVP8& other) const {
     return !(*this == other);
   }
+  // Temporary utility method for transition deleting numberOfTemporalLayers
+  // setting (replaced by ScalabilityMode).
+  void SetNumberOfTemporalLayers(unsigned char n) {
+    numberOfTemporalLayers = n;
+  }
   unsigned char numberOfTemporalLayers;
   bool denoisingOn;
   bool automaticResizeOn;
@@ -62,6 +67,11 @@ struct VideoCodecVP9 {
   bool operator!=(const VideoCodecVP9& other) const {
     return !(*this == other);
   }
+  // Temporary utility method for transition deleting numberOfTemporalLayers
+  // setting (replaced by ScalabilityMode).
+  void SetNumberOfTemporalLayers(unsigned char n) {
+    numberOfTemporalLayers = n;
+  }
   unsigned char numberOfTemporalLayers;
   bool denoisingOn;
   int keyFrameInterval;
@@ -77,6 +87,11 @@ struct VideoCodecH264 {
   bool operator==(const VideoCodecH264& other) const;
   bool operator!=(const VideoCodecH264& other) const {
     return !(*this == other);
+  }
+  // Temporary utility method for transition deleting numberOfTemporalLayers
+  // setting (replaced by ScalabilityMode).
+  void SetNumberOfTemporalLayers(unsigned char n) {
+    numberOfTemporalLayers = n;
   }
   int keyFrameInterval;
   uint8_t numberOfTemporalLayers;
@@ -149,6 +164,15 @@ class RTC_EXPORT VideoCodec {
   bool active;
 
   unsigned int qpMax;
+  // The actual number of simulcast streams. This is <= 1 in singlecast (it can
+  // be 0 in old code paths), but it is also 1 in the {active,inactive,inactive}
+  // "single RTP simulcast" use case and the legacy kSVC use case. In all other
+  // cases this is the same as the number of encodings (which may include
+  // inactive encodings). In other words:
+  // - `numberOfSimulcastStreams <= 1` in singlecast and singlecast-like setups
+  //   including legacy kSVC (encodings interpreted as spatial layers) or
+  //   standard kSVC (1 active encoding).
+  // - `numberOfSimulcastStreams > 1` in simulcast of 2+ active encodings.
   unsigned char numberOfSimulcastStreams;
   SimulcastStream simulcastStream[kMaxSimulcastStreams];
   SpatialLayer spatialLayers[kMaxSpatialLayers];

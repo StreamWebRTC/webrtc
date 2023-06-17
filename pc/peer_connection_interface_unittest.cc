@@ -38,8 +38,16 @@
 #include "api/scoped_refptr.h"
 #include "api/task_queue/default_task_queue_factory.h"
 #include "api/transport/field_trial_based_config.h"
-#include "api/video_codecs/builtin_video_decoder_factory.h"
-#include "api/video_codecs/builtin_video_encoder_factory.h"
+#include "api/video_codecs/video_decoder_factory_template.h"
+#include "api/video_codecs/video_decoder_factory_template_dav1d_adapter.h"
+#include "api/video_codecs/video_decoder_factory_template_libvpx_vp8_adapter.h"
+#include "api/video_codecs/video_decoder_factory_template_libvpx_vp9_adapter.h"
+#include "api/video_codecs/video_decoder_factory_template_open_h264_adapter.h"
+#include "api/video_codecs/video_encoder_factory_template.h"
+#include "api/video_codecs/video_encoder_factory_template_libaom_av1_adapter.h"
+#include "api/video_codecs/video_encoder_factory_template_libvpx_vp8_adapter.h"
+#include "api/video_codecs/video_encoder_factory_template_libvpx_vp9_adapter.h"
+#include "api/video_codecs/video_encoder_factory_template_open_h264_adapter.h"
 #include "media/base/codec.h"
 #include "media/base/media_config.h"
 #include "media/base/media_engine.h"
@@ -72,13 +80,13 @@
 #include "pc/video_track.h"
 #include "rtc_base/checks.h"
 #include "rtc_base/gunit.h"
-#include "rtc_base/ref_counted_object.h"
 #include "rtc_base/rtc_certificate_generator.h"
 #include "rtc_base/socket_address.h"
 #include "rtc_base/thread.h"
 #include "rtc_base/virtual_socket_server.h"
 #include "test/gmock.h"
 #include "test/gtest.h"
+#include "test/scoped_key_value_config.h"
 
 #ifdef WEBRTC_ANDROID
 #include "pc/test/android_test_initializer.h"
@@ -107,6 +115,7 @@ static const char kVideoTracks[][32] = {"videotrack0", "videotrack1"};
 
 static const char kRecvonly[] = "recvonly";
 static const char kSendrecv[] = "sendrecv";
+constexpr uint64_t kTiebreakerDefault = 44444;
 
 // Reference SDP with a MediaStream with label "stream1" and audio track with
 // id "audio_1" and a video track with id "video_1;
@@ -115,7 +124,7 @@ static const char kSdpStringWithStream1PlanB[] =
     "o=- 0 0 IN IP4 127.0.0.1\r\n"
     "s=-\r\n"
     "t=0 0\r\n"
-    "m=audio 1 RTP/AVPF 103\r\n"
+    "m=audio 1 RTP/AVPF 111\r\n"
     "a=ice-ufrag:e5785931\r\n"
     "a=ice-pwd:36fb7878390db89481c1d46daa4278d8\r\n"
     "a=fingerprint:sha-256 58:AB:6E:F5:F1:E4:57:B7:E9:46:F4:86:04:28:F9:A7:ED:"
@@ -123,7 +132,7 @@ static const char kSdpStringWithStream1PlanB[] =
     "a=mid:audio\r\n"
     "a=sendrecv\r\n"
     "a=rtcp-mux\r\n"
-    "a=rtpmap:103 ISAC/16000\r\n"
+    "a=rtpmap:111 OPUS/48000/2\r\n"
     "a=ssrc:1 cname:stream1\r\n"
     "a=ssrc:1 msid:stream1 audiotrack0\r\n"
     "m=video 1 RTP/AVPF 120\r\n"
@@ -145,7 +154,7 @@ static const char kSdpStringWithStream1UnifiedPlan[] =
     "o=- 0 0 IN IP4 127.0.0.1\r\n"
     "s=-\r\n"
     "t=0 0\r\n"
-    "m=audio 1 RTP/AVPF 103\r\n"
+    "m=audio 1 RTP/AVPF 111\r\n"
     "a=ice-ufrag:e5785931\r\n"
     "a=ice-pwd:36fb7878390db89481c1d46daa4278d8\r\n"
     "a=fingerprint:sha-256 58:AB:6E:F5:F1:E4:57:B7:E9:46:F4:86:04:28:F9:A7:ED:"
@@ -153,7 +162,7 @@ static const char kSdpStringWithStream1UnifiedPlan[] =
     "a=mid:0\r\n"
     "a=sendrecv\r\n"
     "a=rtcp-mux\r\n"
-    "a=rtpmap:103 ISAC/16000\r\n"
+    "a=rtpmap:111 OPUS/48000/2\r\n"
     "a=msid:stream1 audiotrack0\r\n"
     "a=ssrc:1 cname:stream1\r\n"
     "m=video 1 RTP/AVPF 120\r\n"
@@ -175,14 +184,14 @@ static const char kSdpStringWithStream1AudioTrackOnly[] =
     "o=- 0 0 IN IP4 127.0.0.1\r\n"
     "s=-\r\n"
     "t=0 0\r\n"
-    "m=audio 1 RTP/AVPF 103\r\n"
+    "m=audio 1 RTP/AVPF 111\r\n"
     "a=ice-ufrag:e5785931\r\n"
     "a=ice-pwd:36fb7878390db89481c1d46daa4278d8\r\n"
     "a=fingerprint:sha-256 58:AB:6E:F5:F1:E4:57:B7:E9:46:F4:86:04:28:F9:A7:ED:"
     "BD:AB:AE:40:EF:CE:9A:51:2C:2A:B1:9B:8B:78:84\r\n"
     "a=mid:audio\r\n"
     "a=sendrecv\r\n"
-    "a=rtpmap:103 ISAC/16000\r\n"
+    "a=rtpmap:111 OPUS/48000/2\r\n"
     "a=ssrc:1 cname:stream1\r\n"
     "a=ssrc:1 msid:stream1 audiotrack0\r\n"
     "a=rtcp-mux\r\n";
@@ -196,7 +205,7 @@ static const char kSdpStringWithStream1And2PlanB[] =
     "s=-\r\n"
     "t=0 0\r\n"
     "a=msid-semantic: WMS stream1 stream2\r\n"
-    "m=audio 1 RTP/AVPF 103\r\n"
+    "m=audio 1 RTP/AVPF 111\r\n"
     "a=ice-ufrag:e5785931\r\n"
     "a=ice-pwd:36fb7878390db89481c1d46daa4278d8\r\n"
     "a=fingerprint:sha-256 58:AB:6E:F5:F1:E4:57:B7:E9:46:F4:86:04:28:F9:A7:ED:"
@@ -204,7 +213,7 @@ static const char kSdpStringWithStream1And2PlanB[] =
     "a=mid:audio\r\n"
     "a=sendrecv\r\n"
     "a=rtcp-mux\r\n"
-    "a=rtpmap:103 ISAC/16000\r\n"
+    "a=rtpmap:111 OPUS/48000/2\r\n"
     "a=ssrc:1 cname:stream1\r\n"
     "a=ssrc:1 msid:stream1 audiotrack0\r\n"
     "a=ssrc:3 cname:stream2\r\n"
@@ -228,7 +237,7 @@ static const char kSdpStringWithStream1And2UnifiedPlan[] =
     "s=-\r\n"
     "t=0 0\r\n"
     "a=msid-semantic: WMS stream1 stream2\r\n"
-    "m=audio 1 RTP/AVPF 103\r\n"
+    "m=audio 1 RTP/AVPF 111\r\n"
     "a=ice-ufrag:e5785931\r\n"
     "a=ice-pwd:36fb7878390db89481c1d46daa4278d8\r\n"
     "a=fingerprint:sha-256 58:AB:6E:F5:F1:E4:57:B7:E9:46:F4:86:04:28:F9:A7:ED:"
@@ -236,7 +245,7 @@ static const char kSdpStringWithStream1And2UnifiedPlan[] =
     "a=mid:0\r\n"
     "a=sendrecv\r\n"
     "a=rtcp-mux\r\n"
-    "a=rtpmap:103 ISAC/16000\r\n"
+    "a=rtpmap:111 OPUS/48000/2\r\n"
     "a=ssrc:1 cname:stream1\r\n"
     "a=ssrc:1 msid:stream1 audiotrack0\r\n"
     "m=video 1 RTP/AVPF 120\r\n"
@@ -250,7 +259,7 @@ static const char kSdpStringWithStream1And2UnifiedPlan[] =
     "a=rtpmap:120 VP8/0\r\n"
     "a=ssrc:2 cname:stream1\r\n"
     "a=ssrc:2 msid:stream1 videotrack0\r\n"
-    "m=audio 1 RTP/AVPF 103\r\n"
+    "m=audio 1 RTP/AVPF 111\r\n"
     "a=ice-ufrag:e5785931\r\n"
     "a=ice-pwd:36fb7878390db89481c1d46daa4278d8\r\n"
     "a=fingerprint:sha-256 58:AB:6E:F5:F1:E4:57:B7:E9:46:F4:86:04:28:F9:A7:ED:"
@@ -258,7 +267,7 @@ static const char kSdpStringWithStream1And2UnifiedPlan[] =
     "a=mid:2\r\n"
     "a=sendrecv\r\n"
     "a=rtcp-mux\r\n"
-    "a=rtpmap:103 ISAC/16000\r\n"
+    "a=rtpmap:111 OPUS/48000/2\r\n"
     "a=ssrc:3 cname:stream2\r\n"
     "a=ssrc:3 msid:stream2 audiotrack1\r\n"
     "m=video 1 RTP/AVPF 120\r\n"
@@ -279,7 +288,7 @@ static const char kSdpStringWithoutStreams[] =
     "o=- 0 0 IN IP4 127.0.0.1\r\n"
     "s=-\r\n"
     "t=0 0\r\n"
-    "m=audio 1 RTP/AVPF 103\r\n"
+    "m=audio 1 RTP/AVPF 111\r\n"
     "a=ice-ufrag:e5785931\r\n"
     "a=ice-pwd:36fb7878390db89481c1d46daa4278d8\r\n"
     "a=fingerprint:sha-256 58:AB:6E:F5:F1:E4:57:B7:E9:46:F4:86:04:28:F9:A7:ED:"
@@ -287,7 +296,7 @@ static const char kSdpStringWithoutStreams[] =
     "a=mid:audio\r\n"
     "a=sendrecv\r\n"
     "a=rtcp-mux\r\n"
-    "a=rtpmap:103 ISAC/16000\r\n"
+    "a=rtpmap:111 OPUS/48000/2\r\n"
     "m=video 1 RTP/AVPF 120\r\n"
     "a=ice-ufrag:e5785931\r\n"
     "a=ice-pwd:36fb7878390db89481c1d46daa4278d8\r\n"
@@ -305,7 +314,7 @@ static const char kSdpStringWithMsidWithoutStreams[] =
     "s=-\r\n"
     "t=0 0\r\n"
     "a=msid-semantic: WMS\r\n"
-    "m=audio 1 RTP/AVPF 103\r\n"
+    "m=audio 1 RTP/AVPF 111\r\n"
     "a=ice-ufrag:e5785931\r\n"
     "a=ice-pwd:36fb7878390db89481c1d46daa4278d8\r\n"
     "a=fingerprint:sha-256 58:AB:6E:F5:F1:E4:57:B7:E9:46:F4:86:04:28:F9:A7:ED:"
@@ -313,7 +322,7 @@ static const char kSdpStringWithMsidWithoutStreams[] =
     "a=mid:audio\r\n"
     "a=sendrecv\r\n"
     "a=rtcp-mux\r\n"
-    "a=rtpmap:103 ISAC/16000\r\n"
+    "a=rtpmap:111 OPUS/48000/2\r\n"
     "m=video 1 RTP/AVPF 120\r\n"
     "a=ice-ufrag:e5785931\r\n"
     "a=ice-pwd:36fb7878390db89481c1d46daa4278d8\r\n"
@@ -330,7 +339,7 @@ static const char kSdpStringWithoutStreamsAudioOnly[] =
     "o=- 0 0 IN IP4 127.0.0.1\r\n"
     "s=-\r\n"
     "t=0 0\r\n"
-    "m=audio 1 RTP/AVPF 103\r\n"
+    "m=audio 1 RTP/AVPF 111\r\n"
     "a=ice-ufrag:e5785931\r\n"
     "a=ice-pwd:36fb7878390db89481c1d46daa4278d8\r\n"
     "a=fingerprint:sha-256 58:AB:6E:F5:F1:E4:57:B7:E9:46:F4:86:04:28:F9:A7:ED:"
@@ -338,7 +347,7 @@ static const char kSdpStringWithoutStreamsAudioOnly[] =
     "a=mid:audio\r\n"
     "a=sendrecv\r\n"
     "a=rtcp-mux\r\n"
-    "a=rtpmap:103 ISAC/16000\r\n";
+    "a=rtpmap:111 OPUS/48000/2\r\n";
 
 // Reference SENDONLY SDP without MediaStreams. Msid is not supported.
 static const char kSdpStringSendOnlyWithoutStreams[] =
@@ -346,7 +355,7 @@ static const char kSdpStringSendOnlyWithoutStreams[] =
     "o=- 0 0 IN IP4 127.0.0.1\r\n"
     "s=-\r\n"
     "t=0 0\r\n"
-    "m=audio 1 RTP/AVPF 103\r\n"
+    "m=audio 1 RTP/AVPF 111\r\n"
     "a=ice-ufrag:e5785931\r\n"
     "a=ice-pwd:36fb7878390db89481c1d46daa4278d8\r\n"
     "a=fingerprint:sha-256 58:AB:6E:F5:F1:E4:57:B7:E9:46:F4:86:04:28:F9:A7:ED:"
@@ -355,7 +364,7 @@ static const char kSdpStringSendOnlyWithoutStreams[] =
     "a=sendrecv\r\n"
     "a=sendonly\r\n"
     "a=rtcp-mux\r\n"
-    "a=rtpmap:103 ISAC/16000\r\n"
+    "a=rtpmap:111 OPUS/48000/2\r\n"
     "m=video 1 RTP/AVPF 120\r\n"
     "a=ice-ufrag:e5785931\r\n"
     "a=ice-pwd:36fb7878390db89481c1d46daa4278d8\r\n"
@@ -375,7 +384,7 @@ static const char kSdpStringInit[] =
     "a=msid-semantic: WMS\r\n";
 
 static const char kSdpStringAudio[] =
-    "m=audio 1 RTP/AVPF 103\r\n"
+    "m=audio 1 RTP/AVPF 111\r\n"
     "a=ice-ufrag:e5785931\r\n"
     "a=ice-pwd:36fb7878390db89481c1d46daa4278d8\r\n"
     "a=fingerprint:sha-256 58:AB:6E:F5:F1:E4:57:B7:E9:46:F4:86:04:28:F9:A7:ED:"
@@ -383,7 +392,7 @@ static const char kSdpStringAudio[] =
     "a=mid:audio\r\n"
     "a=sendrecv\r\n"
     "a=rtcp-mux\r\n"
-    "a=rtpmap:103 ISAC/16000\r\n";
+    "a=rtpmap:111 OPUS/48000/2\r\n";
 
 static const char kSdpStringVideo[] =
     "m=video 1 RTP/AVPF 120\r\n"
@@ -438,11 +447,13 @@ static const char kDtlsSdesFallbackSdp[] =
 class RtcEventLogOutputNull final : public RtcEventLogOutput {
  public:
   bool IsActive() const override { return true; }
-  bool Write(const std::string& output) override { return true; }
+  bool Write(const absl::string_view /*output*/) override { return true; }
 };
 
 using ::cricket::StreamParams;
+using ::testing::Eq;
 using ::testing::Exactly;
+using ::testing::SizeIs;
 using ::testing::Values;
 
 using RTCConfiguration = PeerConnectionInterface::RTCConfiguration;
@@ -675,12 +686,18 @@ class PeerConnectionInterfaceBaseTest : public ::testing::Test {
             fake_audio_capture_module_),
         webrtc::CreateBuiltinAudioEncoderFactory(),
         webrtc::CreateBuiltinAudioDecoderFactory(),
-        webrtc::CreateBuiltinVideoEncoderFactory(),
-        webrtc::CreateBuiltinVideoDecoderFactory(), nullptr /* audio_mixer */,
-        nullptr /* audio_processing */);
+        std::make_unique<webrtc::VideoEncoderFactoryTemplate<
+            webrtc::LibvpxVp8EncoderTemplateAdapter,
+            webrtc::LibvpxVp9EncoderTemplateAdapter,
+            webrtc::OpenH264EncoderTemplateAdapter,
+            webrtc::LibaomAv1EncoderTemplateAdapter>>(),
+        std::make_unique<webrtc::VideoDecoderFactoryTemplate<
+            webrtc::LibvpxVp8DecoderTemplateAdapter,
+            webrtc::LibvpxVp9DecoderTemplateAdapter,
+            webrtc::OpenH264DecoderTemplateAdapter,
+            webrtc::Dav1dDecoderTemplateAdapter>>(),
+        nullptr /* audio_mixer */, nullptr /* audio_processing */);
     ASSERT_TRUE(pc_factory_);
-    pc_factory_for_test_ =
-        PeerConnectionFactoryForTest::CreatePeerConnectionFactoryForTest();
   }
 
   void TearDown() override {
@@ -729,8 +746,12 @@ class PeerConnectionInterfaceBaseTest : public ::testing::Test {
       pc_ = nullptr;
     }
     std::unique_ptr<cricket::FakePortAllocator> port_allocator(
-        new cricket::FakePortAllocator(rtc::Thread::Current(), nullptr));
+        new cricket::FakePortAllocator(
+            rtc::Thread::Current(),
+            std::make_unique<rtc::BasicPacketSocketFactory>(vss_.get()),
+            &field_trials_));
     port_allocator_ = port_allocator.get();
+    port_allocator_->SetIceTiebreaker(kTiebreakerDefault);
 
     // Create certificate generator unless DTLS constraint is explicitly set to
     // false.
@@ -809,8 +830,7 @@ class PeerConnectionInterfaceBaseTest : public ::testing::Test {
 
   rtc::scoped_refptr<VideoTrackInterface> CreateVideoTrack(
       const std::string& label) {
-    return pc_factory_->CreateVideoTrack(label,
-                                         FakeVideoTrackSource::Create().get());
+    return pc_factory_->CreateVideoTrack(FakeVideoTrackSource::Create(), label);
   }
 
   void AddVideoTrack(const std::string& track_label,
@@ -1251,13 +1271,15 @@ class PeerConnectionInterfaceBaseTest : public ::testing::Test {
     }
   }
 
+  rtc::SocketServer* socket_server() const { return vss_.get(); }
+
+  webrtc::test::ScopedKeyValueConfig field_trials_;
   std::unique_ptr<rtc::VirtualSocketServer> vss_;
   rtc::AutoSocketServerThread main_;
   rtc::scoped_refptr<FakeAudioCaptureModule> fake_audio_capture_module_;
   cricket::FakePortAllocator* port_allocator_ = nullptr;
   FakeRTCCertificateGenerator* fake_certificate_generator_ = nullptr;
   rtc::scoped_refptr<webrtc::PeerConnectionFactoryInterface> pc_factory_;
-  rtc::scoped_refptr<PeerConnectionFactoryForTest> pc_factory_for_test_;
   rtc::scoped_refptr<PeerConnectionInterface> pc_;
   MockPeerConnectionObserver observer_;
   rtc::scoped_refptr<StreamCollection> reference_collection_;
@@ -1327,7 +1349,6 @@ TEST_P(PeerConnectionInterfaceTest, CreatePeerConnectionWithPooledCandidates) {
   server.uri = kStunAddressOnly;
   config.servers.push_back(server);
   config.type = PeerConnectionInterface::kRelay;
-  config.disable_ipv6 = true;
   config.tcp_candidate_policy =
       PeerConnectionInterface::kTcpCandidatePolicyDisabled;
   config.candidate_network_policy =
@@ -1340,7 +1361,6 @@ TEST_P(PeerConnectionInterfaceTest, CreatePeerConnectionWithPooledCandidates) {
           port_allocator_->GetPooledSession());
   ASSERT_NE(nullptr, session);
   EXPECT_EQ(1UL, session->stun_servers().size());
-  EXPECT_EQ(0U, session->flags() & cricket::PORTALLOCATOR_ENABLE_IPV6);
   EXPECT_LT(0U, session->flags() & cricket::PORTALLOCATOR_DISABLE_TCP);
   EXPECT_LT(0U,
             session->flags() & cricket::PORTALLOCATOR_DISABLE_COSTLY_NETWORKS);
@@ -1359,8 +1379,11 @@ TEST_P(PeerConnectionInterfaceTest, CreatePeerConnectionWithPooledCandidates) {
 TEST_P(PeerConnectionInterfaceTest,
        CreatePeerConnectionAppliesNetworkConfigToPortAllocator) {
   // Create fake port allocator.
+  std::unique_ptr<rtc::PacketSocketFactory> packet_socket_factory(
+      new rtc::BasicPacketSocketFactory(socket_server()));
   std::unique_ptr<cricket::FakePortAllocator> port_allocator(
-      new cricket::FakePortAllocator(rtc::Thread::Current(), nullptr));
+      new cricket::FakePortAllocator(
+          rtc::Thread::Current(), packet_socket_factory.get(), &field_trials_));
   cricket::FakePortAllocator* raw_port_allocator = port_allocator.get();
 
   // Create RTCConfiguration with some network-related fields relevant to
@@ -1382,9 +1405,17 @@ TEST_P(PeerConnectionInterfaceTest,
           rtc::Thread::Current(), fake_audio_capture_module_,
           webrtc::CreateBuiltinAudioEncoderFactory(),
           webrtc::CreateBuiltinAudioDecoderFactory(),
-          webrtc::CreateBuiltinVideoEncoderFactory(),
-          webrtc::CreateBuiltinVideoDecoderFactory(), nullptr /* audio_mixer */,
-          nullptr /* audio_processing */));
+          std::make_unique<webrtc::VideoEncoderFactoryTemplate<
+              webrtc::LibvpxVp8EncoderTemplateAdapter,
+              webrtc::LibvpxVp9EncoderTemplateAdapter,
+              webrtc::OpenH264EncoderTemplateAdapter,
+              webrtc::LibaomAv1EncoderTemplateAdapter>>(),
+          std::make_unique<webrtc::VideoDecoderFactoryTemplate<
+              webrtc::LibvpxVp8DecoderTemplateAdapter,
+              webrtc::LibvpxVp9DecoderTemplateAdapter,
+              webrtc::OpenH264DecoderTemplateAdapter,
+              webrtc::Dav1dDecoderTemplateAdapter>>(),
+          nullptr /* audio_mixer */, nullptr /* audio_processing */));
   PeerConnectionDependencies pc_dependencies(&observer_);
   pc_dependencies.allocator = std::move(port_allocator);
   auto result = pc_factory_->CreatePeerConnectionOrError(
@@ -1572,6 +1603,57 @@ TEST_F(PeerConnectionInterfaceTestPlanB, AddTrackRemoveTrack) {
   // should return false.
   EXPECT_FALSE(pc_->RemoveTrackOrError(audio_sender).ok());
   EXPECT_FALSE(pc_->RemoveTrackOrError(video_sender).ok());
+}
+
+// Test for AddTrack with init_send_encoding.
+TEST_F(PeerConnectionInterfaceTestPlanB, AddTrackWithSendEncodings) {
+  CreatePeerConnectionWithoutDtls();
+  rtc::scoped_refptr<AudioTrackInterface> audio_track(
+      CreateAudioTrack("audio_track"));
+  rtc::scoped_refptr<VideoTrackInterface> video_track(
+      CreateVideoTrack("video_track"));
+  RtpEncodingParameters audio_encodings;
+  audio_encodings.active = false;
+  auto audio_sender =
+      pc_->AddTrack(audio_track, {kStreamId1}, {audio_encodings}).MoveValue();
+  RtpEncodingParameters video_encodings;
+  video_encodings.active = true;
+  auto video_sender =
+      pc_->AddTrack(video_track, {kStreamId1}, {video_encodings}).MoveValue();
+  EXPECT_EQ(1UL, audio_sender->stream_ids().size());
+  EXPECT_EQ(kStreamId1, audio_sender->stream_ids()[0]);
+  EXPECT_EQ("audio_track", audio_sender->id());
+  EXPECT_EQ(audio_track, audio_sender->track());
+  EXPECT_EQ(1UL, video_sender->stream_ids().size());
+  EXPECT_EQ(kStreamId1, video_sender->stream_ids()[0]);
+  EXPECT_EQ("video_track", video_sender->id());
+  EXPECT_EQ(video_track, video_sender->track());
+
+  // Now create an offer and check for the senders.
+  std::unique_ptr<SessionDescriptionInterface> offer;
+  ASSERT_TRUE(DoCreateOffer(&offer, nullptr));
+
+  const cricket::ContentInfo* audio_content =
+      cricket::GetFirstAudioContent(offer->description());
+  EXPECT_TRUE(ContainsTrack(audio_content->media_description()->streams(),
+                            kStreamId1, "audio_track"));
+
+  const cricket::ContentInfo* video_content =
+      cricket::GetFirstVideoContent(offer->description());
+  EXPECT_TRUE(ContainsTrack(video_content->media_description()->streams(),
+                            kStreamId1, "video_track"));
+
+  EXPECT_TRUE(DoSetLocalDescription(std::move(offer)));
+
+  // Check the encodings.
+  ASSERT_THAT(audio_sender->GetParameters().encodings, SizeIs(1));
+  EXPECT_THAT(audio_sender->GetParameters().encodings[0].active, Eq(false));
+  ASSERT_THAT(video_sender->GetParameters().encodings, SizeIs(1));
+  EXPECT_THAT(video_sender->GetParameters().encodings[0].active, Eq(true));
+
+  // Now try removing the tracks.
+  EXPECT_TRUE(pc_->RemoveTrackOrError(audio_sender).ok());
+  EXPECT_TRUE(pc_->RemoveTrackOrError(video_sender).ok());
 }
 
 // Test creating senders without a stream specified,
@@ -1929,6 +2011,16 @@ TEST_P(PeerConnectionInterfaceTest, CreateSctpDataChannel) {
   EXPECT_TRUE(channel.ok());
   EXPECT_FALSE(channel.value()->reliable());
   EXPECT_FALSE(observer_.renegotiation_needed_);
+}
+
+TEST_P(PeerConnectionInterfaceTest, CreateSctpDataChannelWhenClosed) {
+  RTCConfiguration rtc_config;
+  CreatePeerConnection(rtc_config);
+  pc_->Close();
+  webrtc::DataChannelInit config;
+  auto ret = pc_->CreateDataChannelOrError("1", &config);
+  ASSERT_FALSE(ret.ok());
+  EXPECT_EQ(ret.error().type(), RTCErrorType::INVALID_STATE);
 }
 
 // For backwards compatibility, we want people who "unset" maxRetransmits
@@ -3643,6 +3735,32 @@ TEST_P(PeerConnectionInterfaceTest, ExtmapAllowMixedIsConfigurable) {
   EXPECT_FALSE(offer->description()->extmap_allow_mixed());
 }
 
+TEST_P(PeerConnectionInterfaceTest,
+       RtpSenderSetDegradationPreferenceWithoutEncodings) {
+  CreatePeerConnection();
+  AddVideoTrack("video_label");
+
+  std::vector<rtc::scoped_refptr<RtpSenderInterface>> rtp_senders =
+      pc_->GetSenders();
+  ASSERT_EQ(rtp_senders.size(), 1u);
+  ASSERT_EQ(rtp_senders[0]->media_type(), cricket::MEDIA_TYPE_VIDEO);
+  rtc::scoped_refptr<RtpSenderInterface> video_rtp_sender = rtp_senders[0];
+  RtpParameters parameters = video_rtp_sender->GetParameters();
+  ASSERT_NE(parameters.degradation_preference,
+            DegradationPreference::MAINTAIN_RESOLUTION);
+  parameters.degradation_preference =
+      DegradationPreference::MAINTAIN_RESOLUTION;
+  ASSERT_TRUE(video_rtp_sender->SetParameters(parameters).ok());
+
+  std::unique_ptr<SessionDescriptionInterface> local_offer;
+  ASSERT_TRUE(DoCreateOffer(&local_offer, nullptr));
+  ASSERT_TRUE(DoSetLocalDescription(std::move(local_offer)));
+
+  RtpParameters parameters_new = video_rtp_sender->GetParameters();
+  ASSERT_EQ(parameters_new.degradation_preference,
+            DegradationPreference::MAINTAIN_RESOLUTION);
+}
+
 INSTANTIATE_TEST_SUITE_P(PeerConnectionInterfaceTest,
                          PeerConnectionInterfaceTest,
                          Values(SdpSemantics::kPlanB_DEPRECATED,
@@ -3740,10 +3858,6 @@ TEST(RTCConfigurationTest, ComparisonOperators) {
   PeerConnectionInterface::RTCConfiguration f;
   f.ice_connection_receiving_timeout = 1337;
   EXPECT_NE(a, f);
-
-  PeerConnectionInterface::RTCConfiguration g;
-  g.disable_ipv6 = true;
-  EXPECT_NE(a, g);
 
   PeerConnectionInterface::RTCConfiguration h(
       PeerConnectionInterface::RTCConfigurationType::kAggressive);

@@ -12,9 +12,8 @@
 #ifndef SDK_OBJC_FRAMEWORK_CLASSES_VIDEOTOOLBOX_NALU_REWRITER_H_
 #define SDK_OBJC_FRAMEWORK_CLASSES_VIDEOTOOLBOX_NALU_REWRITER_H_
 
-#include "modules/video_coding/codecs/h264/include/h264.h"
-
 #include <CoreMedia/CoreMedia.h>
+
 #include <vector>
 
 #include "common_video/h264/h264_common.h"

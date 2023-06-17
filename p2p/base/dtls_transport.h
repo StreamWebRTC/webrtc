@@ -15,6 +15,7 @@
 #include <string>
 #include <vector>
 
+#include "absl/strings/string_view.h"
 #include "api/crypto/crypto_options.h"
 #include "api/dtls_transport_interface.h"
 #include "api/sequence_checker.h"
@@ -48,14 +49,12 @@ class StreamInterfaceChannel : public rtc::StreamInterface {
   // Implementations of StreamInterface
   rtc::StreamState GetState() const override;
   void Close() override;
-  rtc::StreamResult Read(void* buffer,
-                         size_t buffer_len,
-                         size_t* read,
-                         int* error) override;
-  rtc::StreamResult Write(const void* data,
-                          size_t data_len,
-                          size_t* written,
-                          int* error) override;
+  rtc::StreamResult Read(rtc::ArrayView<uint8_t> buffer,
+                         size_t& read,
+                         int& error) override;
+  rtc::StreamResult Write(rtc::ArrayView<const uint8_t> data,
+                          size_t& written,
+                          int& error) override;
 
  private:
   RTC_NO_UNIQUE_ADDRESS webrtc::SequenceChecker sequence_checker_;
@@ -135,9 +134,16 @@ class DtlsTransport : public DtlsTransportInternal {
   // SetRemoteFingerprint must be called after SetLocalCertificate, and any
   // other methods like SetDtlsRole. It's what triggers the actual DTLS setup.
   // TODO(deadbeef): Rename to "Start" like in ORTC?
-  bool SetRemoteFingerprint(const std::string& digest_alg,
+  bool SetRemoteFingerprint(absl::string_view digest_alg,
                             const uint8_t* digest,
                             size_t digest_len) override;
+
+  // SetRemoteParameters must be called after SetLocalCertificate.
+  webrtc::RTCError SetRemoteParameters(
+      absl::string_view digest_alg,
+      const uint8_t* digest,
+      size_t digest_len,
+      absl::optional<rtc::SSLRole> role) override;
 
   // Called to send a packet (via DTLS, if turned on).
   int SendPacket(const char* data,
@@ -167,7 +173,7 @@ class DtlsTransport : public DtlsTransportInternal {
   // method extracts the keys negotiated during the DTLS handshake, for use in
   // external encryption. DTLS-SRTP uses this to extract the needed SRTP keys.
   // See the SSLStreamAdapter documentation for info on the specific parameters.
-  bool ExportKeyingMaterial(const std::string& label,
+  bool ExportKeyingMaterial(absl::string_view label,
                             const uint8_t* context,
                             size_t context_len,
                             bool use_context,

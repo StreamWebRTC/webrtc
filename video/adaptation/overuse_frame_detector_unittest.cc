@@ -12,7 +12,6 @@
 
 #include <memory>
 
-#include "api/field_trials_view.h"
 #include "api/video/encoded_image.h"
 #include "api/video/i420_buffer.h"
 #include "api/video/video_adaptation_reason.h"
@@ -36,7 +35,6 @@ const int kHeight = 480;
 // Corresponds to load of 15%
 const int kFrameIntervalUs = 33 * rtc::kNumMicrosecsPerMillisec;
 const int kProcessTimeUs = 5 * rtc::kNumMicrosecsPerMillisec;
-const test::ScopedKeyValueConfig kFieldTrials;
 }  // namespace
 
 class MockCpuOveruseObserver : public OveruseFrameDetectorObserverInterface {
@@ -64,7 +62,7 @@ class OveruseFrameDetectorUnderTest : public OveruseFrameDetector {
  public:
   explicit OveruseFrameDetectorUnderTest(
       CpuOveruseMetricsObserver* metrics_observer)
-      : OveruseFrameDetector(metrics_observer, kFieldTrials) {}
+      : OveruseFrameDetector(metrics_observer) {}
   ~OveruseFrameDetectorUnderTest() {}
 
   using OveruseFrameDetector::CheckForOveruse;
@@ -74,8 +72,6 @@ class OveruseFrameDetectorUnderTest : public OveruseFrameDetector {
 class OveruseFrameDetectorTest : public ::testing::Test,
                                  public CpuOveruseMetricsObserver {
  protected:
-  OveruseFrameDetectorTest() : options_(kFieldTrials) {}
-
   void SetUp() override {
     observer_ = &mock_observer_;
     options_.min_process_count = 0;
@@ -432,12 +428,9 @@ TEST_F(OveruseFrameDetectorTest, UpdatesExistingSamples) {
 TEST_F(OveruseFrameDetectorTest, RunOnTqNormalUsage) {
   TaskQueueForTest queue("OveruseFrameDetectorTestQueue");
 
-  queue.SendTask(
-      [&] {
-        overuse_detector_->StartCheckForOveruse(queue.Get(), options_,
-                                                observer_);
-      },
-      RTC_FROM_HERE);
+  queue.SendTask([&] {
+    overuse_detector_->StartCheckForOveruse(queue.Get(), options_, observer_);
+  });
 
   rtc::Event event;
   // Expect NormalUsage(). When called, stop the `overuse_detector_` and then
@@ -457,7 +450,7 @@ TEST_F(OveruseFrameDetectorTest, RunOnTqNormalUsage) {
                                     kDelayUs2);
   });
 
-  EXPECT_TRUE(event.Wait(10000));
+  EXPECT_TRUE(event.Wait(TimeDelta::Seconds(10)));
 }
 
 // TODO(crbug.com/webrtc/12846): investigate why the test fails on MAC bots.
@@ -917,12 +910,9 @@ TEST_F(OveruseFrameDetectorTest2, UpdatesExistingSamples) {
 TEST_F(OveruseFrameDetectorTest2, RunOnTqNormalUsage) {
   TaskQueueForTest queue("OveruseFrameDetectorTestQueue");
 
-  queue.SendTask(
-      [&] {
-        overuse_detector_->StartCheckForOveruse(queue.Get(), options_,
-                                                observer_);
-      },
-      RTC_FROM_HERE);
+  queue.SendTask([&] {
+    overuse_detector_->StartCheckForOveruse(queue.Get(), options_, observer_);
+  });
 
   rtc::Event event;
   // Expect NormalUsage(). When called, stop the `overuse_detector_` and then
@@ -942,7 +932,7 @@ TEST_F(OveruseFrameDetectorTest2, RunOnTqNormalUsage) {
                                     kDelayUs2);
   });
 
-  EXPECT_TRUE(event.Wait(10000));
+  EXPECT_TRUE(event.Wait(TimeDelta::Seconds(10)));
 }
 
 // Models screencast, with irregular arrival of frames which are heavy

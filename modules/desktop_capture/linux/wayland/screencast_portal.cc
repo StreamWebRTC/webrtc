@@ -13,8 +13,8 @@
 #include <gio/gunixfdlist.h>
 #include <glib-object.h>
 
-#include "modules/desktop_capture/linux/wayland/scoped_glib.h"
-#include "modules/desktop_capture/linux/wayland/xdg_desktop_portal_utils.h"
+#include "modules/portal/scoped_glib.h"
+#include "modules/portal/xdg_desktop_portal_utils.h"
 #include "rtc_base/checks.h"
 #include "rtc_base/logging.h"
 
@@ -24,6 +24,7 @@ namespace {
 using xdg_portal::kScreenCastInterfaceName;
 using xdg_portal::PrepareSignalHandle;
 using xdg_portal::RequestResponse;
+using xdg_portal::RequestResponseFromPortalResponse;
 using xdg_portal::RequestSessionProxy;
 using xdg_portal::SetupRequestResponseSignal;
 using xdg_portal::SetupSessionRequestHandlers;
@@ -32,42 +33,56 @@ using xdg_portal::TearDownSession;
 
 }  // namespace
 
-ScreenCastPortal::ScreenCastPortal(
-    ScreenCastPortal::CaptureSourceType source_type,
-    PortalNotifier* notifier)
-    : ScreenCastPortal(source_type,
+// static
+ScreenCastPortal::CaptureSourceType ScreenCastPortal::ToCaptureSourceType(
+    CaptureType type) {
+  switch (type) {
+    case CaptureType::kScreen:
+      return ScreenCastPortal::CaptureSourceType::kScreen;
+    case CaptureType::kWindow:
+      return ScreenCastPortal::CaptureSourceType::kWindow;
+  }
+}
+
+ScreenCastPortal::ScreenCastPortal(CaptureType type, PortalNotifier* notifier)
+    : ScreenCastPortal(type,
                        notifier,
                        OnProxyRequested,
                        OnSourcesRequestResponseSignal,
                        this) {}
 
 ScreenCastPortal::ScreenCastPortal(
-    CaptureSourceType source_type,
+    CaptureType type,
     PortalNotifier* notifier,
     ProxyRequestResponseHandler proxy_request_response_handler,
     SourcesRequestResponseSignalHandler sources_request_response_signal_handler,
-    gpointer user_data)
+    gpointer user_data,
+    bool prefer_cursor_embedded)
     : notifier_(notifier),
-      capture_source_type_(source_type),
+      capture_source_type_(ToCaptureSourceType(type)),
+      cursor_mode_(prefer_cursor_embedded ? CursorMode::kEmbedded
+                                          : CursorMode::kMetadata),
       proxy_request_response_handler_(proxy_request_response_handler),
       sources_request_response_signal_handler_(
           sources_request_response_signal_handler),
       user_data_(user_data) {}
 
 ScreenCastPortal::~ScreenCastPortal() {
-  Cleanup();
+  Stop();
 }
 
-void ScreenCastPortal::Cleanup() {
+void ScreenCastPortal::Stop() {
   UnsubscribeSignalHandlers();
   TearDownSession(std::move(session_handle_), proxy_, cancellable_,
                   connection_);
   session_handle_ = "";
   cancellable_ = nullptr;
   proxy_ = nullptr;
+  restore_token_ = "";
 
   if (pw_fd_ != -1) {
     close(pw_fd_);
+    pw_fd_ = -1;
   }
 }
 
@@ -120,7 +135,7 @@ xdg_portal::SessionDetails ScreenCastPortal::GetSessionDetails() {
 void ScreenCastPortal::OnPortalDone(RequestResponse result) {
   notifier_->OnScreenCastRequestResult(result, pw_stream_node_id_, pw_fd_);
   if (result != RequestResponse::kSuccess) {
-    Cleanup();
+    Stop();
   }
 }
 
@@ -161,7 +176,13 @@ void ScreenCastPortal::OnSessionRequestResponseSignal(
   that->RegisterSessionClosedSignalHandler(
       OnSessionClosedSignal, parameters, that->connection_,
       that->session_handle_, that->session_closed_signal_id_);
-  that->SourcesRequest();
+
+  // Do not continue if we don't get session_handle back. The call above will
+  // already notify the capturer there is a failure, but we would still continue
+  // to make following request and crash on that.
+  if (!that->session_handle_.empty()) {
+    that->SourcesRequest();
+  }
 }
 
 // static
@@ -198,17 +219,34 @@ void ScreenCastPortal::SourcesRequest() {
   g_variant_builder_add(&builder, "{sv}", "multiple",
                         g_variant_new_boolean(false));
 
-  Scoped<GVariant> variant(
+  Scoped<GVariant> cursorModesVariant(
       g_dbus_proxy_get_cached_property(proxy_, "AvailableCursorModes"));
-  if (variant.get()) {
+  if (cursorModesVariant.get()) {
     uint32_t modes = 0;
-    g_variant_get(variant.get(), "u", &modes);
+    g_variant_get(cursorModesVariant.get(), "u", &modes);
     // Make request only if this mode is advertised by the portal
     // implementation.
     if (modes & static_cast<uint32_t>(cursor_mode_)) {
       g_variant_builder_add(
           &builder, "{sv}", "cursor_mode",
           g_variant_new_uint32(static_cast<uint32_t>(cursor_mode_)));
+    }
+  }
+
+  Scoped<GVariant> versionVariant(
+      g_dbus_proxy_get_cached_property(proxy_, "version"));
+  if (versionVariant.get()) {
+    uint32_t version = 0;
+    g_variant_get(versionVariant.get(), "u", &version);
+    // Make request only if xdg-desktop-portal has required API version
+    if (version >= 4) {
+      g_variant_builder_add(
+          &builder, "{sv}", "persist_mode",
+          g_variant_new_uint32(static_cast<uint32_t>(persist_mode_)));
+      if (!restore_token_.empty()) {
+        g_variant_builder_add(&builder, "{sv}", "restore_token",
+                              g_variant_new_string(restore_token_.c_str()));
+      }
     }
   }
 
@@ -320,16 +358,17 @@ void ScreenCastPortal::OnStartRequestResponseSignal(GDBusConnection* connection,
   uint32_t portal_response;
   Scoped<GVariant> response_data;
   Scoped<GVariantIter> iter;
+  Scoped<char> restore_token;
   g_variant_get(parameters, "(u@a{sv})", &portal_response,
                 response_data.receive());
   if (portal_response || !response_data) {
     RTC_LOG(LS_ERROR) << "Failed to start the screen cast session.";
-    that->OnPortalDone(static_cast<RequestResponse>(portal_response));
+    that->OnPortalDone(RequestResponseFromPortalResponse(portal_response));
     return;
   }
 
   // Array of PipeWire streams. See
-  // https://github.com/flatpak/xdg-desktop-portal/blob/master/data/org.freedesktop.portal.ScreenCast.xml
+  // https://github.com/flatpak/xdg-desktop-portal/blob/main/data/org.freedesktop.portal.ScreenCast.xml
   // documentation for <method name="Start">.
   if (g_variant_lookup(response_data.get(), "streams", "a(ua{sv})",
                        iter.receive())) {
@@ -354,11 +393,28 @@ void ScreenCastPortal::OnStartRequestResponseSignal(GDBusConnection* connection,
     }
   }
 
+  if (g_variant_lookup(response_data.get(), "restore_token", "s",
+                       restore_token.receive())) {
+    that->restore_token_ = restore_token.get();
+  }
+
   that->OpenPipeWireRemote();
 }
 
 uint32_t ScreenCastPortal::pipewire_stream_node_id() {
   return pw_stream_node_id_;
+}
+
+void ScreenCastPortal::SetPersistMode(ScreenCastPortal::PersistMode mode) {
+  persist_mode_ = mode;
+}
+
+void ScreenCastPortal::SetRestoreToken(const std::string& token) {
+  restore_token_ = token;
+}
+
+std::string ScreenCastPortal::RestoreToken() const {
+  return restore_token_;
 }
 
 void ScreenCastPortal::OpenPipeWireRemote() {

@@ -17,6 +17,7 @@
 #include <utility>
 
 #include "absl/strings/match.h"
+#include "absl/strings/string_view.h"
 #include "modules/audio_coding/audio_network_adaptor/audio_network_adaptor_impl.h"
 #include "modules/audio_coding/audio_network_adaptor/controller_manager.h"
 #include "modules/audio_coding/codecs/opus/audio_coder_opus_common.h"
@@ -349,7 +350,7 @@ AudioEncoderOpusImpl::AudioEncoderOpusImpl(const AudioEncoderOpusConfig& config,
     : AudioEncoderOpusImpl(
           config,
           payload_type,
-          [this](const std::string& config_string, RtcEventLog* event_log) {
+          [this](absl::string_view config_string, RtcEventLog* event_log) {
             return DefaultAudioNetworkAdaptorCreator(config_string, event_log);
           },
           // We choose 5sec as initial time constant due to empirical data.
@@ -361,8 +362,6 @@ AudioEncoderOpusImpl::AudioEncoderOpusImpl(
     const AudioNetworkAdaptorCreator& audio_network_adaptor_creator,
     std::unique_ptr<SmoothingFilter> bitrate_smoother)
     : payload_type_(payload_type),
-      send_side_bwe_with_overhead_(
-          !webrtc::field_trial::IsDisabled("WebRTC-SendSideBwe-WithOverhead")),
       use_stable_target_for_adaptation_(!webrtc::field_trial::IsDisabled(
           "WebRTC-Audio-StableTargetAdaptation")),
       adjust_bandwidth_(
@@ -520,7 +519,7 @@ void AudioEncoderOpusImpl::OnReceivedUplinkBandwidth(
     }
 
     ApplyAudioNetworkAdaptor();
-  } else if (send_side_bwe_with_overhead_) {
+  } else {
     if (!overhead_bytes_per_packet_) {
       RTC_LOG(LS_INFO)
           << "AudioEncoderOpusImpl: Overhead unknown, target audio bitrate "
@@ -533,8 +532,6 @@ void AudioEncoderOpusImpl::OnReceivedUplinkBandwidth(
         std::min(AudioEncoderOpusConfig::kMaxBitrateBps,
                  std::max(AudioEncoderOpusConfig::kMinBitrateBps,
                           target_audio_bitrate_bps - overhead_bps)));
-  } else {
-    SetTargetBitrate(target_audio_bitrate_bps);
   }
 }
 void AudioEncoderOpusImpl::OnReceivedUplinkBandwidth(
@@ -777,7 +774,7 @@ void AudioEncoderOpusImpl::ApplyAudioNetworkAdaptor() {
 
 std::unique_ptr<AudioNetworkAdaptor>
 AudioEncoderOpusImpl::DefaultAudioNetworkAdaptorCreator(
-    const std::string& config_string,
+    absl::string_view config_string,
     RtcEventLog* event_log) const {
   AudioNetworkAdaptorImpl::Config config;
   config.event_log = event_log;
@@ -812,9 +809,10 @@ ANAStats AudioEncoderOpusImpl::GetANAStats() const {
 
 absl::optional<std::pair<TimeDelta, TimeDelta> >
 AudioEncoderOpusImpl::GetFrameLengthRange() const {
-  if (config_.supported_frame_lengths_ms.empty()) {
-    return absl::nullopt;
-  } else if (audio_network_adaptor_) {
+  if (audio_network_adaptor_) {
+    if (config_.supported_frame_lengths_ms.empty()) {
+      return absl::nullopt;
+    }
     return {{TimeDelta::Millis(config_.supported_frame_lengths_ms.front()),
              TimeDelta::Millis(config_.supported_frame_lengths_ms.back())}};
   } else {

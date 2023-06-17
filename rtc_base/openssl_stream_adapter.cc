@@ -28,6 +28,7 @@
 #include <utility>
 #include <vector>
 
+#include "api/array_view.h"
 #include "rtc_base/checks.h"
 #include "rtc_base/logging.h"
 #include "rtc_base/numerics/safe_conversions.h"
@@ -42,7 +43,7 @@
 #include "rtc_base/openssl_utility.h"
 #include "rtc_base/ssl_certificate.h"
 #include "rtc_base/stream.h"
-#include "rtc_base/task_utils/to_queued_task.h"
+#include "rtc_base/string_encode.h"
 #include "rtc_base/thread.h"
 #include "rtc_base/time_utils.h"
 #include "system_wrappers/include/field_trial.h"
@@ -59,6 +60,7 @@
 
 namespace rtc {
 namespace {
+using ::webrtc::SafeTask;
 // SRTP cipher suite table. `internal_name` is used to construct a
 // colon-separated profile strings which is needed by
 // SSL_CTX_set_tlsext_use_srtp().
@@ -214,7 +216,8 @@ static int stream_read(BIO* b, char* out, int outl) {
   BIO_clear_retry_flags(b);
   size_t read;
   int error;
-  StreamResult result = stream->Read(out, outl, &read, &error);
+  StreamResult result = stream->Read(
+      rtc::MakeArrayView(reinterpret_cast<uint8_t*>(out), outl), read, error);
   if (result == SR_SUCCESS) {
     return checked_cast<int>(read);
   } else if (result == SR_BLOCK) {
@@ -231,7 +234,9 @@ static int stream_write(BIO* b, const char* in, int inl) {
   BIO_clear_retry_flags(b);
   size_t written;
   int error;
-  StreamResult result = stream->Write(in, inl, &written, &error);
+  StreamResult result = stream->Write(
+      rtc::MakeArrayView(reinterpret_cast<const uint8_t*>(in), inl), written,
+      error);
   if (result == SR_SUCCESS) {
     return checked_cast<int>(written);
   } else if (result == SR_BLOCK) {
@@ -389,9 +394,10 @@ std::string OpenSSLStreamAdapter::SslCipherSuiteToName(int cipher_suite) {
   }
   return SSL_CIPHER_standard_name(ssl_cipher);
 #else
+  const int openssl_cipher_id = 0x03000000L | cipher_suite;
   for (const SslCipherMapEntry* entry = kSslCipherMap; entry->rfc_name;
        ++entry) {
-    if (cipher_suite == static_cast<int>(entry->openssl_id)) {
+    if (openssl_cipher_id == static_cast<int>(entry->openssl_id)) {
       return entry->rfc_name;
     }
   }
@@ -555,17 +561,15 @@ void OpenSSLStreamAdapter::SetInitialRetransmissionTimeout(int timeout_ms) {
 //
 // StreamInterface Implementation
 //
-
-StreamResult OpenSSLStreamAdapter::Write(const void* data,
-                                         size_t data_len,
-                                         size_t* written,
-                                         int* error) {
-  RTC_DLOG(LS_VERBOSE) << "OpenSSLStreamAdapter::Write(" << data_len << ")";
+StreamResult OpenSSLStreamAdapter::Write(rtc::ArrayView<const uint8_t> data,
+                                         size_t& written,
+                                         int& error) {
+  RTC_DLOG(LS_VERBOSE) << "OpenSSLStreamAdapter::Write(" << data.size() << ")";
 
   switch (state_) {
     case SSL_NONE:
       // pass-through in clear text
-      return stream_->Write(data, data_len, written, error);
+      return stream_->Write(data, written, error);
 
     case SSL_WAIT:
     case SSL_CONNECTING:
@@ -580,31 +584,26 @@ StreamResult OpenSSLStreamAdapter::Write(const void* data,
     case SSL_ERROR:
     case SSL_CLOSED:
     default:
-      if (error) {
-        *error = ssl_error_code_;
-      }
+      error = ssl_error_code_;
       return SR_ERROR;
   }
 
   // OpenSSL will return an error if we try to write zero bytes
-  if (data_len == 0) {
-    if (written) {
-      *written = 0;
-    }
+  if (data.size() == 0) {
+    written = 0;
     return SR_SUCCESS;
   }
 
   ssl_write_needs_read_ = false;
 
-  int code = SSL_write(ssl_, data, checked_cast<int>(data_len));
+  int code = SSL_write(ssl_, data.data(), checked_cast<int>(data.size()));
   int ssl_error = SSL_get_error(ssl_, code);
   switch (ssl_error) {
     case SSL_ERROR_NONE:
       RTC_DLOG(LS_VERBOSE) << " -- success";
       RTC_DCHECK_GT(code, 0);
-      RTC_DCHECK_LE(code, data_len);
-      if (written)
-        *written = code;
+      RTC_DCHECK_LE(code, data.size());
+      written = code;
       return SR_SUCCESS;
     case SSL_ERROR_WANT_READ:
       RTC_DLOG(LS_VERBOSE) << " -- error want read";
@@ -617,23 +616,20 @@ StreamResult OpenSSLStreamAdapter::Write(const void* data,
     case SSL_ERROR_ZERO_RETURN:
     default:
       Error("SSL_write", (ssl_error ? ssl_error : -1), 0, false);
-      if (error) {
-        *error = ssl_error_code_;
-      }
+      error = ssl_error_code_;
       return SR_ERROR;
   }
   // not reached
 }
 
-StreamResult OpenSSLStreamAdapter::Read(void* data,
-                                        size_t data_len,
-                                        size_t* read,
-                                        int* error) {
-  RTC_DLOG(LS_VERBOSE) << "OpenSSLStreamAdapter::Read(" << data_len << ")";
+StreamResult OpenSSLStreamAdapter::Read(rtc::ArrayView<uint8_t> data,
+                                        size_t& read,
+                                        int& error) {
+  RTC_DLOG(LS_VERBOSE) << "OpenSSLStreamAdapter::Read(" << data.size() << ")";
   switch (state_) {
     case SSL_NONE:
       // pass-through in clear text
-      return stream_->Read(data, data_len, read, error);
+      return stream_->Read(data, read, error);
     case SSL_WAIT:
     case SSL_CONNECTING:
       return SR_BLOCK;
@@ -646,33 +642,27 @@ StreamResult OpenSSLStreamAdapter::Read(void* data,
       return SR_EOS;
     case SSL_ERROR:
     default:
-      if (error) {
-        *error = ssl_error_code_;
-      }
+      error = ssl_error_code_;
       return SR_ERROR;
   }
 
   // Don't trust OpenSSL with zero byte reads
-  if (data_len == 0) {
-    if (read) {
-      *read = 0;
-    }
+  if (data.size() == 0) {
+    read = 0;
     return SR_SUCCESS;
   }
 
   ssl_read_needs_write_ = false;
 
-  const int code = SSL_read(ssl_, data, checked_cast<int>(data_len));
+  const int code = SSL_read(ssl_, data.data(), checked_cast<int>(data.size()));
   const int ssl_error = SSL_get_error(ssl_, code);
 
   switch (ssl_error) {
     case SSL_ERROR_NONE:
       RTC_DLOG(LS_VERBOSE) << " -- success";
       RTC_DCHECK_GT(code, 0);
-      RTC_DCHECK_LE(code, data_len);
-      if (read) {
-        *read = code;
-      }
+      RTC_DCHECK_LE(code, data.size());
+      read = code;
 
       if (ssl_mode_ == SSL_MODE_DTLS) {
         // Enforce atomic reads -- this is a short read
@@ -681,9 +671,7 @@ StreamResult OpenSSLStreamAdapter::Read(void* data,
         if (pending) {
           RTC_DLOG(LS_INFO) << " -- short DTLS read. flushing";
           FlushInput(pending);
-          if (error) {
-            *error = SSE_MSG_TRUNC;
-          }
+          error = SSE_MSG_TRUNC;
           return SR_ERROR;
         }
       }
@@ -701,9 +689,7 @@ StreamResult OpenSSLStreamAdapter::Read(void* data,
       return SR_EOS;
     default:
       Error("SSL_read", (ssl_error ? ssl_error : -1), 0, false);
-      if (error) {
-        *error = ssl_error_code_;
-      }
+      error = ssl_error_code_;
       return SR_ERROR;
   }
   // not reached
@@ -820,8 +806,9 @@ void OpenSSLStreamAdapter::OnEvent(StreamInterface* stream,
 }
 
 void OpenSSLStreamAdapter::PostEvent(int events, int err) {
-  owner_->PostTask(webrtc::ToQueuedTask(
-      task_safety_, [this, events, err]() { SignalEvent(this, events, err); }));
+  owner_->PostTask(SafeTask(task_safety_.flag(), [this, events, err]() {
+    SignalEvent(this, events, err);
+  }));
 }
 
 void OpenSSLStreamAdapter::SetTimeout(int delay_ms) {
@@ -1070,9 +1057,7 @@ SSL_CTX* OpenSSLStreamAdapter::SetupSSLContext() {
     return nullptr;
   }
 
-#if !defined(NDEBUG)
   SSL_CTX_set_info_callback(ctx, OpenSSLAdapter::SSLInfoCallback);
-#endif
 
   int mode = SSL_VERIFY_PEER;
   if (GetClientAuthEnabled()) {
@@ -1131,7 +1116,10 @@ bool OpenSSLStreamAdapter::VerifyPeerCertificate() {
   Buffer computed_digest(digest, digest_length);
   if (computed_digest != peer_certificate_digest_value_) {
     RTC_LOG(LS_WARNING)
-        << "Rejected peer certificate due to mismatched digest.";
+        << "Rejected peer certificate due to mismatched digest using "
+        << peer_certificate_digest_algorithm_ << ". Expected "
+        << rtc::hex_encode_with_delimiter(peer_certificate_digest_value_, ':')
+        << " got " << rtc::hex_encode_with_delimiter(computed_digest, ':');
     return false;
   }
   // Ignore any verification error if the digest matches, since there is no

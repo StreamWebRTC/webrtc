@@ -27,7 +27,6 @@
 // "api/test/videocodec_test_fixture.h"
 // "api/test/videocodec_test_stats.h"
 
-#include "api/test/dummy_peer_connection.h"
 #include "api/test/fake_frame_decryptor.h"
 #include "api/test/fake_frame_encryptor.h"
 #include "api/test/mock_async_dns_resolver.h"
@@ -43,6 +42,7 @@
 #include "api/test/mock_rtp_transceiver.h"
 #include "api/test/mock_rtpreceiver.h"
 #include "api/test/mock_rtpsender.h"
+#include "api/test/mock_session_description_interface.h"
 #include "api/test/mock_transformable_video_frame.h"
 #include "api/test/mock_video_bitrate_allocator.h"
 #include "api/test/mock_video_bitrate_allocator_factory.h"

@@ -14,6 +14,8 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "absl/strings/string_view.h"
+#include "modules/audio_coding/acm2/acm_receiver.h"
 #include "modules/audio_coding/include/audio_coding_module.h"
 #include "modules/audio_coding/test/PCMFile.h"
 #include "modules/audio_coding/test/RTPFile.h"
@@ -51,7 +53,7 @@ class Sender {
   Sender();
   void Setup(AudioCodingModule* acm,
              RTPStream* rtpStream,
-             std::string in_file_name,
+             absl::string_view in_file_name,
              int in_sample_rate,
              int payload_type,
              SdpAudioFormat format);
@@ -72,9 +74,9 @@ class Receiver {
  public:
   Receiver();
   virtual ~Receiver() {}
-  void Setup(AudioCodingModule* acm,
+  void Setup(acm2::AcmReceiver* acm_receiver,
              RTPStream* rtpStream,
-             std::string out_file_name,
+             absl::string_view out_file_name,
              size_t channels,
              int file_num);
   void Teardown();
@@ -90,7 +92,7 @@ class Receiver {
   bool _firstTime;
 
  protected:
-  AudioCodingModule* _acm;
+  acm2::AcmReceiver* _acm_receiver;
   uint8_t _incomingPayload[MAX_INCOMING_PAYLOAD];
   RTPStream* _rtpStream;
   RTPHeader _rtpHeader;

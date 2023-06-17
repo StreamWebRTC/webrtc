@@ -27,8 +27,18 @@
 #include "api/stats/rtc_stats.h"
 #include "api/stats/rtc_stats_report.h"
 #include "api/stats/rtcstats_objects.h"
-#include "api/video_codecs/builtin_video_decoder_factory.h"
-#include "api/video_codecs/builtin_video_encoder_factory.h"
+#include "api/test/metrics/global_metrics_logger_and_exporter.h"
+#include "api/test/metrics/metric.h"
+#include "api/video_codecs/video_decoder_factory_template.h"
+#include "api/video_codecs/video_decoder_factory_template_dav1d_adapter.h"
+#include "api/video_codecs/video_decoder_factory_template_libvpx_vp8_adapter.h"
+#include "api/video_codecs/video_decoder_factory_template_libvpx_vp9_adapter.h"
+#include "api/video_codecs/video_decoder_factory_template_open_h264_adapter.h"
+#include "api/video_codecs/video_encoder_factory_template.h"
+#include "api/video_codecs/video_encoder_factory_template_libaom_av1_adapter.h"
+#include "api/video_codecs/video_encoder_factory_template_libvpx_vp8_adapter.h"
+#include "api/video_codecs/video_encoder_factory_template_libvpx_vp9_adapter.h"
+#include "api/video_codecs/video_encoder_factory_template_open_h264_adapter.h"
 #include "modules/audio_device/include/audio_device.h"
 #include "modules/audio_processing/include/audio_processing.h"
 #include "p2p/base/port_allocator.h"
@@ -45,21 +55,23 @@
 #include "rtc_base/firewall_socket_server.h"
 #include "rtc_base/gunit.h"
 #include "rtc_base/helpers.h"
-#include "rtc_base/location.h"
-#include "rtc_base/ref_counted_object.h"
 #include "rtc_base/socket_address.h"
 #include "rtc_base/socket_factory.h"
 #include "rtc_base/ssl_certificate.h"
+#include "rtc_base/task_queue_for_test.h"
 #include "rtc_base/test_certificate_verifier.h"
 #include "rtc_base/thread.h"
 #include "rtc_base/virtual_socket_server.h"
 #include "system_wrappers/include/clock.h"
 #include "test/gtest.h"
-#include "test/testsupport/perf_test.h"
 
 namespace webrtc {
-
 namespace {
+
+using ::webrtc::test::GetGlobalMetricsLogger;
+using ::webrtc::test::ImprovementDirection;
+using ::webrtc::test::Unit;
+
 static const int kDefaultTestTimeMs = 15000;
 static const int kRampUpTimeMs = 5000;
 static const int kPollIntervalTimeMs = 50;
@@ -73,6 +85,7 @@ static const int kTurnExternalPort = 0;
 // Setting the network bandwidth to 1 Mbps allows the video's bitrate to push
 // the network's limitations.
 static const int kNetworkBandwidth = 1000000;
+
 }  // namespace
 
 using RTCConfiguration = PeerConnectionInterface::RTCConfiguration;
@@ -122,8 +135,8 @@ class PeerConnectionWrapperForRampUpTest : public PeerConnectionWrapper {
             config, clock, /*is_screencast=*/false));
     video_track_sources_.back()->Start();
     return rtc::scoped_refptr<VideoTrackInterface>(
-        pc_factory()->CreateVideoTrack(rtc::CreateRandomUuid(),
-                                       video_track_sources_.back().get()));
+        pc_factory()->CreateVideoTrack(video_track_sources_.back(),
+                                       rtc::CreateRandomUuid()));
   }
 
   rtc::scoped_refptr<AudioTrackInterface> CreateLocalAudioTrack(
@@ -159,13 +172,17 @@ class PeerConnectionRampUpTest : public ::testing::Test {
         network_thread_.get(), worker_thread_.get(), rtc::Thread::Current(),
         rtc::scoped_refptr<AudioDeviceModule>(FakeAudioCaptureModule::Create()),
         CreateBuiltinAudioEncoderFactory(), CreateBuiltinAudioDecoderFactory(),
-        CreateBuiltinVideoEncoderFactory(), CreateBuiltinVideoDecoderFactory(),
+        std::make_unique<VideoEncoderFactoryTemplate<
+            LibvpxVp8EncoderTemplateAdapter, LibvpxVp9EncoderTemplateAdapter,
+            OpenH264EncoderTemplateAdapter, LibaomAv1EncoderTemplateAdapter>>(),
+        std::make_unique<VideoDecoderFactoryTemplate<
+            LibvpxVp8DecoderTemplateAdapter, LibvpxVp9DecoderTemplateAdapter,
+            OpenH264DecoderTemplateAdapter, Dav1dDecoderTemplateAdapter>>(),
         nullptr /* audio_mixer */, nullptr /* audio_processing */);
   }
 
   virtual ~PeerConnectionRampUpTest() {
-    network_thread()->Invoke<void>(RTC_FROM_HERE,
-                                   [this] { turn_servers_.clear(); });
+    SendTask(network_thread(), [this] { turn_servers_.clear(); });
   }
 
   bool CreatePeerConnectionWrappers(const RTCConfiguration& caller_config,
@@ -236,18 +253,17 @@ class PeerConnectionRampUpTest : public ::testing::Test {
                         const std::string& common_name = "test turn server") {
     rtc::Thread* thread = network_thread();
     rtc::SocketFactory* factory = firewall_socket_server_.get();
-    std::unique_ptr<cricket::TestTurnServer> turn_server =
-        network_thread_->Invoke<std::unique_ptr<cricket::TestTurnServer>>(
-            RTC_FROM_HERE, [thread, factory, type, common_name] {
-              static const rtc::SocketAddress turn_server_internal_address{
-                  kTurnInternalAddress, kTurnInternalPort};
-              static const rtc::SocketAddress turn_server_external_address{
-                  kTurnExternalAddress, kTurnExternalPort};
-              return std::make_unique<cricket::TestTurnServer>(
-                  thread, factory, turn_server_internal_address,
-                  turn_server_external_address, type,
-                  true /*ignore_bad_certs=*/, common_name);
-            });
+    std::unique_ptr<cricket::TestTurnServer> turn_server;
+    SendTask(network_thread_.get(), [&] {
+      static const rtc::SocketAddress turn_server_internal_address{
+          kTurnInternalAddress, kTurnInternalPort};
+      static const rtc::SocketAddress turn_server_external_address{
+          kTurnExternalAddress, kTurnExternalPort};
+      turn_server = std::make_unique<cricket::TestTurnServer>(
+          thread, factory, turn_server_internal_address,
+          turn_server_external_address, type, true /*ignore_bad_certs=*/,
+          common_name);
+    });
     turn_servers_.push_back(std::move(turn_server));
   }
 
@@ -268,8 +284,10 @@ class PeerConnectionRampUpTest : public ::testing::Test {
     double average_bandwidth_estimate = total_bwe / number_of_polls;
     std::string value_description =
         "bwe_after_" + std::to_string(kDefaultTestTimeMs / 1000) + "_seconds";
-    test::PrintResult("peerconnection_ramp_up_", test_string, value_description,
-                      average_bandwidth_estimate, "bwe", false);
+    GetGlobalMetricsLogger()->LogSingleValueMetric(
+        "peerconnection_ramp_up_" + test_string, value_description,
+        average_bandwidth_estimate, Unit::kUnitless,
+        ImprovementDirection::kNeitherIsBetter);
   }
 
   rtc::Thread* network_thread() { return network_thread_.get(); }

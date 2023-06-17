@@ -29,22 +29,21 @@
 #include "modules/audio_device/win/audio_device_core_win.h"
 // clang-format on
 
-#include <string.h>
-
 #include <comdef.h>
 #include <dmo.h>
 #include <functiondiscoverykeys_devpkey.h>
 #include <mmsystem.h>
+#include <string.h>
 #include <strsafe.h>
 #include <uuids.h>
 #include <windows.h>
 
 #include <iomanip>
 
+#include "api/make_ref_counted.h"
 #include "rtc_base/checks.h"
 #include "rtc_base/logging.h"
 #include "rtc_base/platform_thread.h"
-#include "rtc_base/ref_counted_object.h"
 #include "rtc_base/string_utils.h"
 #include "rtc_base/thread_annotations.h"
 #include "system_wrappers/include/sleep.h"
@@ -3267,9 +3266,10 @@ DWORD AudioDeviceWindowsCore::DoCaptureThread() {
         QueryPerformanceCounter(&t1);
 
         // Get the current recording and playout delay.
-        uint32_t sndCardRecDelay = (uint32_t)(
-            ((((UINT64)t1.QuadPart * _perfCounterFactor) - recTime) / 10000) +
-            (10 * syncBufIndex) / _recBlockSize - 10);
+        uint32_t sndCardRecDelay =
+            (uint32_t)(((((UINT64)t1.QuadPart * _perfCounterFactor) - recTime) /
+                        10000) +
+                       (10 * syncBufIndex) / _recBlockSize - 10);
         uint32_t sndCardPlayDelay = static_cast<uint32_t>(_sndCardPlayDelay);
 
         while (syncBufIndex >= _recBlockSize) {

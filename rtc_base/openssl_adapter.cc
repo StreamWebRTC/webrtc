@@ -33,8 +33,8 @@
 #endif
 
 #include "absl/memory/memory.h"
+#include "api/units/time_delta.h"
 #include "rtc_base/checks.h"
-#include "rtc_base/location.h"
 #include "rtc_base/logging.h"
 #include "rtc_base/numerics/safe_conversions.h"
 #include "rtc_base/openssl.h"
@@ -165,6 +165,8 @@ static void LogSslError() {
 /////////////////////////////////////////////////////////////////////////////
 
 namespace rtc {
+
+using ::webrtc::TimeDelta;
 
 namespace webrtc_openssl_adapter_internal {
 
@@ -392,7 +394,7 @@ int OpenSSLAdapter::ContinueSSL() {
   RTC_DCHECK(state_ == SSL_CONNECTING);
 
   // Clear the DTLS timer
-  Thread::Current()->Clear(this, MSG_TIMEOUT);
+  timer_.reset();
 
   int code = (role_ == SSL_CLIENT) ? SSL_connect(ssl_) : SSL_accept(ssl_);
   switch (SSL_get_error(ssl_, code)) {
@@ -420,10 +422,10 @@ int OpenSSLAdapter::ContinueSSL() {
       RTC_LOG(LS_VERBOSE) << " -- error want read";
       struct timeval timeout;
       if (DTLSv1_get_timeout(ssl_, &timeout)) {
-        int delay = timeout.tv_sec * 1000 + timeout.tv_usec / 1000;
-
-        Thread::Current()->PostDelayed(RTC_FROM_HERE, delay, this, MSG_TIMEOUT,
-                                       0);
+        TimeDelta delay = TimeDelta::Seconds(timeout.tv_sec) +
+                          TimeDelta::Micros(timeout.tv_usec);
+        Thread::Current()->PostDelayedTask(
+            SafeTask(timer_.flag(), [this] { OnTimeout(); }), delay);
       }
       break;
 
@@ -470,7 +472,7 @@ void OpenSSLAdapter::Cleanup() {
   identity_.reset();
 
   // Clear the DTLS timer
-  Thread::Current()->Clear(this, MSG_TIMEOUT);
+  timer_.reset();
 }
 
 int OpenSSLAdapter::DoSslWrite(const void* pv, size_t cb, int* error) {
@@ -673,12 +675,10 @@ bool OpenSSLAdapter::IsResumedSession() {
   return (ssl_ && SSL_session_reused(ssl_) == 1);
 }
 
-void OpenSSLAdapter::OnMessage(Message* msg) {
-  if (MSG_TIMEOUT == msg->message_id) {
-    RTC_LOG(LS_INFO) << "DTLS timeout expired";
-    DTLSv1_handle_timeout(ssl_);
-    ContinueSSL();
-  }
+void OpenSSLAdapter::OnTimeout() {
+  RTC_LOG(LS_INFO) << "DTLS timeout expired";
+  DTLSv1_handle_timeout(ssl_);
+  ContinueSSL();
 }
 
 void OpenSSLAdapter::OnConnectEvent(Socket* socket) {
@@ -777,35 +777,67 @@ bool OpenSSLAdapter::SSLPostConnectionCheck(SSL* ssl, absl::string_view host) {
   return is_valid_cert_name;
 }
 
-#if !defined(NDEBUG)
-
-// We only use this for tracing and so it is only needed in debug mode
-
-void OpenSSLAdapter::SSLInfoCallback(const SSL* s, int where, int ret) {
-  const char* str = "undefined";
-  int w = where & ~SSL_ST_MASK;
-  if (w & SSL_ST_CONNECT) {
-    str = "SSL_connect";
-  } else if (w & SSL_ST_ACCEPT) {
-    str = "SSL_accept";
+void OpenSSLAdapter::SSLInfoCallback(const SSL* s, int where, int value) {
+  std::string type;
+  bool info_log = false;
+  bool alert_log = false;
+  switch (where) {
+    case SSL_CB_EXIT:
+      info_log = true;
+      type = "exit";
+      break;
+    case SSL_CB_ALERT:
+      alert_log = true;
+      type = "alert";
+      break;
+    case SSL_CB_READ_ALERT:
+      alert_log = true;
+      type = "read_alert";
+      break;
+    case SSL_CB_WRITE_ALERT:
+      alert_log = true;
+      type = "write_alert";
+      break;
+    case SSL_CB_ACCEPT_LOOP:
+      info_log = true;
+      type = "accept_loop";
+      break;
+    case SSL_CB_ACCEPT_EXIT:
+      info_log = true;
+      type = "accept_exit";
+      break;
+    case SSL_CB_CONNECT_LOOP:
+      info_log = true;
+      type = "connect_loop";
+      break;
+    case SSL_CB_CONNECT_EXIT:
+      info_log = true;
+      type = "connect_exit";
+      break;
+    case SSL_CB_HANDSHAKE_START:
+      info_log = true;
+      type = "handshake_start";
+      break;
+    case SSL_CB_HANDSHAKE_DONE:
+      info_log = true;
+      type = "handshake_done";
+      break;
+    case SSL_CB_LOOP:
+    case SSL_CB_READ:
+    case SSL_CB_WRITE:
+    default:
+      break;
   }
-  if (where & SSL_CB_LOOP) {
-    RTC_DLOG(LS_VERBOSE) << str << ":" << SSL_state_string_long(s);
-  } else if (where & SSL_CB_ALERT) {
-    str = (where & SSL_CB_READ) ? "read" : "write";
-    RTC_DLOG(LS_INFO) << "SSL3 alert " << str << ":"
-                      << SSL_alert_type_string_long(ret) << ":"
-                      << SSL_alert_desc_string_long(ret);
-  } else if (where & SSL_CB_EXIT) {
-    if (ret == 0) {
-      RTC_DLOG(LS_INFO) << str << ":failed in " << SSL_state_string_long(s);
-    } else if (ret < 0) {
-      RTC_DLOG(LS_INFO) << str << ":error in " << SSL_state_string_long(s);
-    }
+
+  if (info_log) {
+    RTC_LOG(LS_INFO) << type << " " << SSL_state_string_long(s);
+  }
+  if (alert_log) {
+    RTC_LOG(LS_WARNING) << type << " " << SSL_alert_type_string_long(value)
+                        << " " << SSL_alert_desc_string_long(value) << " "
+                        << SSL_state_string_long(s);
   }
 }
-
-#endif
 
 #ifdef WEBRTC_USE_CRYPTO_BUFFER_CALLBACK
 // static

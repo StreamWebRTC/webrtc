@@ -15,16 +15,13 @@
 #include "absl/memory/memory.h"
 #include "absl/strings/string_view.h"
 #include "api/scoped_refptr.h"
+#include "api/test/pclf/media_configuration.h"
+#include "api/test/pclf/peer_configurer.h"
 #include "modules/audio_processing/include/audio_processing.h"
 
 namespace webrtc {
 namespace webrtc_pc_e2e {
 namespace {
-
-using VideoSubscription = ::webrtc::webrtc_pc_e2e::
-    PeerConnectionE2EQualityTestFixture::VideoSubscription;
-using VideoConfig =
-    ::webrtc::webrtc_pc_e2e::PeerConnectionE2EQualityTestFixture::VideoConfig;
 
 class SetRemoteDescriptionCallback
     : public webrtc::SetRemoteDescriptionObserverInterface {
@@ -75,6 +72,12 @@ void TestPeer::SetVideoSubscription(VideoSubscription subscription) {
   configurable_params_.video_subscription = std::move(subscription);
 }
 
+void TestPeer::GetStats(RTCStatsCollectorCallback* callback) {
+  pc()->signaling_thread()->PostTask(
+      SafeTask(signaling_thread_task_safety_,
+               [this, callback]() { pc()->GetStats(callback); }));
+}
+
 bool TestPeer::SetRemoteDescription(
     std::unique_ptr<SessionDescriptionInterface> desc,
     std::string* error_out) {
@@ -115,6 +118,7 @@ bool TestPeer::AddIceCandidates(
 }
 
 void TestPeer::Close() {
+  signaling_thread_task_safety_->SetNotAlive();
   wrapper_->pc()->Close();
   remote_ice_candidates_.clear();
   audio_processing_ = nullptr;
@@ -129,7 +133,7 @@ TestPeer::TestPeer(
     std::unique_ptr<MockPeerConnectionObserver> observer,
     Params params,
     ConfigurableParams configurable_params,
-    std::vector<PeerConfigurerImpl::VideoSource> video_sources,
+    std::vector<PeerConfigurer::VideoSource> video_sources,
     rtc::scoped_refptr<AudioProcessing> audio_processing,
     std::unique_ptr<rtc::Thread> worker_thread)
     : params_(std::move(params)),
@@ -139,7 +143,9 @@ TestPeer::TestPeer(
                                                        std::move(pc),
                                                        std::move(observer))),
       video_sources_(std::move(video_sources)),
-      audio_processing_(audio_processing) {}
+      audio_processing_(audio_processing) {
+  signaling_thread_task_safety_ = PendingTaskSafetyFlag::CreateDetached();
+}
 
 }  // namespace webrtc_pc_e2e
 }  // namespace webrtc

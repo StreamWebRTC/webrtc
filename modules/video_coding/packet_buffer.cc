@@ -113,6 +113,10 @@ PacketBuffer::InsertResult PacketBuffer::InsertPacket(
 
   UpdateMissingPackets(seq_num);
 
+  received_padding_.erase(
+      received_padding_.begin(),
+      received_padding_.lower_bound(seq_num - (buffer_.size() / 4)));
+
   result.packets = FindFrames(seq_num);
   return result;
 }
@@ -146,11 +150,11 @@ void PacketBuffer::ClearTo(uint16_t seq_num) {
   first_seq_num_ = seq_num;
 
   is_cleared_to_first_seq_num_ = true;
-  auto clear_to_it = missing_packets_.upper_bound(seq_num);
-  if (clear_to_it != missing_packets_.begin()) {
-    --clear_to_it;
-    missing_packets_.erase(missing_packets_.begin(), clear_to_it);
-  }
+  missing_packets_.erase(missing_packets_.begin(),
+                         missing_packets_.lower_bound(seq_num));
+
+  received_padding_.erase(received_padding_.begin(),
+                          received_padding_.lower_bound(seq_num));
 }
 
 void PacketBuffer::Clear() {
@@ -160,12 +164,17 @@ void PacketBuffer::Clear() {
 PacketBuffer::InsertResult PacketBuffer::InsertPadding(uint16_t seq_num) {
   PacketBuffer::InsertResult result;
   UpdateMissingPackets(seq_num);
+  received_padding_.insert(seq_num);
   result.packets = FindFrames(static_cast<uint16_t>(seq_num + 1));
   return result;
 }
 
 void PacketBuffer::ForceSpsPpsIdrIsH264Keyframe() {
   sps_pps_idr_is_h264_keyframe_ = true;
+}
+
+void PacketBuffer::ResetSpsPpsIdrIsH264Keyframe() {
+  sps_pps_idr_is_h264_keyframe_ = false;
 }
 
 void PacketBuffer::ClearInternal() {
@@ -177,6 +186,7 @@ void PacketBuffer::ClearInternal() {
   is_cleared_to_first_seq_num_ = false;
   newest_inserted_seq_num_.reset();
   missing_packets_.clear();
+  received_padding_.clear();
 }
 
 bool PacketBuffer::ExpandBufferSize() {
@@ -225,7 +235,18 @@ bool PacketBuffer::PotentialNewFrame(uint16_t seq_num) const {
 std::vector<std::unique_ptr<PacketBuffer::Packet>> PacketBuffer::FindFrames(
     uint16_t seq_num) {
   std::vector<std::unique_ptr<PacketBuffer::Packet>> found_frames;
-  for (size_t i = 0; i < buffer_.size() && PotentialNewFrame(seq_num); ++i) {
+  auto start = seq_num;
+
+  for (size_t i = 0; i < buffer_.size(); ++i) {
+    if (received_padding_.find(seq_num) != received_padding_.end()) {
+      seq_num += 1;
+      continue;
+    }
+
+    if (!PotentialNewFrame(seq_num)) {
+      break;
+    }
+
     size_t index = seq_num % buffer_.size();
     buffer_[index]->continuous = true;
 
@@ -241,7 +262,9 @@ std::vector<std::unique_ptr<PacketBuffer::Packet>> PacketBuffer::FindFrames(
       int64_t frame_timestamp = buffer_[start_index]->timestamp;
 
       // Identify H.264 keyframes by means of SPS, PPS, and IDR.
-      bool is_h264 = buffer_[start_index]->codec() == kVideoCodecH264;
+      bool is_generic = buffer_[start_index]->video_header.generic.has_value();
+      bool is_h264_descriptor =
+          (buffer_[start_index]->codec() == kVideoCodecH264) && !is_generic;
       bool has_h264_sps = false;
       bool has_h264_pps = false;
       bool has_h264_idr = false;
@@ -270,7 +293,7 @@ std::vector<std::unique_ptr<PacketBuffer::Packet>> PacketBuffer::FindFrames(
           }
         }
 
-        if (is_h264) {
+        if (is_h264_descriptor) {
           const auto* h264_header = absl::get_if<RTPVideoHeaderH264>(
               &buffer_[start_index]->video_header.video_type_header);
           if (!h264_header || h264_header->nalus_length >= kMaxNalusPerPacket)
@@ -347,7 +370,7 @@ std::vector<std::unique_ptr<PacketBuffer::Packet>> PacketBuffer::FindFrames(
         --start_seq_num;
       }
 
-      if (is_h264) {
+      if (is_h264_descriptor) {
         // Warn if this is an unsafe frame.
         if (has_h264_idr && (!has_h264_sps || !has_h264_pps)) {
           RTC_LOG(LS_WARNING)
@@ -440,6 +463,8 @@ std::vector<std::unique_ptr<PacketBuffer::Packet>> PacketBuffer::FindFrames(
 
         missing_packets_.erase(missing_packets_.begin(),
                                missing_packets_.upper_bound(seq_num));
+        received_padding_.erase(received_padding_.lower_bound(start),
+                                received_padding_.upper_bound(seq_num));
       }
     }
     ++seq_num;

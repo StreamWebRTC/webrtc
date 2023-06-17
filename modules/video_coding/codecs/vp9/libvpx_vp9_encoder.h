@@ -14,11 +14,13 @@
 
 #ifdef RTC_ENABLE_VP9
 
+#include <array>
 #include <memory>
 #include <vector>
 
 #include "api/fec_controller_override.h"
 #include "api/field_trials_view.h"
+#include "api/video_codecs/scalability_mode.h"
 #include "api/video_codecs/video_encoder.h"
 #include "api/video_codecs/vp9_profile.h"
 #include "common_video/include/video_frame_buffer_pool.h"
@@ -67,15 +69,15 @@ class LibvpxVp9Encoder : public VP9Encoder {
 
   bool PopulateCodecSpecific(CodecSpecificInfo* codec_specific,
                              absl::optional<int>* spatial_idx,
+                             absl::optional<int>* temporal_idx,
                              const vpx_codec_cx_pkt& pkt);
   void FillReferenceIndices(const vpx_codec_cx_pkt& pkt,
                             size_t pic_num,
                             bool inter_layer_predicted,
                             CodecSpecificInfoVP9* vp9_info);
   void UpdateReferenceBuffers(const vpx_codec_cx_pkt& pkt, size_t pic_num);
-  vpx_svc_ref_frame_config_t SetReferences(
-      bool is_key_pic,
-      size_t first_active_spatial_layer_id);
+  vpx_svc_ref_frame_config_t SetReferences(bool is_key_pic,
+                                           int first_active_spatial_layer_id);
 
   bool ExplicitlyConfiguredSpatialLayers() const;
   bool SetSvcRates(const VideoBitrateAllocation& bitrate_allocation);
@@ -141,8 +143,6 @@ class LibvpxVp9Encoder : public VP9Encoder {
   InterLayerPredMode inter_layer_pred_;
   bool external_ref_control_;
   const bool trusted_rate_controller_;
-  bool layer_buffering_;
-  const bool full_superframe_drop_;
   vpx_svc_frame_drop_t svc_drop_frame_;
   bool first_frame_in_picture_;
   VideoBitrateAllocation current_bitrate_allocation_;
@@ -150,29 +150,22 @@ class LibvpxVp9Encoder : public VP9Encoder {
   bool force_all_active_layers_;
 
   std::unique_ptr<ScalableVideoController> svc_controller_;
+  absl::optional<ScalabilityMode> scalability_mode_;
   std::vector<FramerateControllerDeprecated> framerate_controller_;
 
   // Used for flexible mode.
   bool is_flexible_mode_;
   struct RefFrameBuffer {
-    RefFrameBuffer(size_t pic_num,
-                   size_t spatial_layer_id,
-                   size_t temporal_layer_id)
-        : pic_num(pic_num),
-          spatial_layer_id(spatial_layer_id),
-          temporal_layer_id(temporal_layer_id) {}
-    RefFrameBuffer() {}
-
     bool operator==(const RefFrameBuffer& o) {
       return pic_num == o.pic_num && spatial_layer_id == o.spatial_layer_id &&
              temporal_layer_id == o.temporal_layer_id;
     }
 
     size_t pic_num = 0;
-    size_t spatial_layer_id = 0;
-    size_t temporal_layer_id = 0;
+    int spatial_layer_id = 0;
+    int temporal_layer_id = 0;
   };
-  flat_map<size_t, RefFrameBuffer> ref_buf_;
+  std::array<RefFrameBuffer, kNumVp9Buffers> ref_buf_;
   std::vector<ScalableVideoController::LayerFrameConfig> layer_frames_;
 
   // Variable frame-rate related fields and methods.

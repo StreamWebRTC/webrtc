@@ -13,7 +13,6 @@
 #import "RTCH264ProfileLevelId.h"
 #import "RTCVideoEncoderH264.h"
 #import "api/video_codec/RTCVideoCodecConstants.h"
-#import "api/video_codec/RTCVideoEncoderAV1.h"
 #import "api/video_codec/RTCVideoEncoderVP8.h"
 #import "api/video_codec/RTCVideoEncoderVP9.h"
 #import "base/RTCVideoCodecInfo.h"
@@ -60,10 +59,9 @@
         addObject:[[RTC_OBJC_TYPE(RTCVideoCodecInfo) alloc] initWithName:kRTCVideoCodecVp9Name]];
   }
 
-  if ([RTC_OBJC_TYPE(RTCVideoEncoderAV1) isSupported]) {
-    [result
-        addObject:[[RTC_OBJC_TYPE(RTCVideoCodecInfo) alloc] initWithName:kRTCVideoCodecAv1Name]];
-  }
+#if defined(RTC_USE_LIBAOM_AV1_ENCODER)
+  [result addObject:[[RTC_OBJC_TYPE(RTCVideoCodecInfo) alloc] initWithName:kRTCVideoCodecAv1Name]];
+#endif
 
 #ifdef WEBRTC_USE_H265
     [result
@@ -81,8 +79,10 @@
   } else if ([info.name isEqualToString:kRTCVideoCodecVp9Name] &&
              [RTC_OBJC_TYPE(RTCVideoEncoderVP9) isSupported]) {
     return [RTC_OBJC_TYPE(RTCVideoEncoderVP9) vp9Encoder];
-  } else if ([info.name isEqualToString:kRTCVideoCodecAv1Name] &&
-             [RTC_OBJC_TYPE(RTCVideoEncoderAV1) isSupported]) {
+  }
+
+#if defined(RTC_USE_LIBAOM_AV1_ENCODER)
+  if ([info.name isEqualToString:kRTCVideoCodecAv1Name]) {
     return [RTC_OBJC_TYPE(RTCVideoEncoderAV1) av1Encoder];
 #ifdef WEBRTC_USE_H265
   } else if (@available(iOS 11, *)) {
@@ -91,6 +91,7 @@
     }
 #endif
   }
+#endif
 
   return nil;
 }

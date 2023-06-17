@@ -14,6 +14,7 @@
 #include <string>
 #include <vector>
 
+#include "absl/strings/string_view.h"
 #include "api/rtp_headers.h"
 #include "api/units/timestamp.h"
 #include "modules/rtp_rtcp/source/rtcp_packet/bye.h"
@@ -46,6 +47,8 @@ struct LoggedRtpPacket {
   Timestamp timestamp;
   // TODO(terelius): This allocates space for 15 CSRCs even if none are used.
   RTPHeader header;
+  // RTPHeader::extension is a mess, save DD wire format instead.
+  std::vector<uint8_t> dependency_descriptor_wire_format;
   size_t header_length;
   size_t total_length;
 };
@@ -79,7 +82,7 @@ struct LoggedRtpPacketOutgoing {
 struct LoggedRtcpPacket {
   LoggedRtcpPacket(Timestamp timestamp, const std::vector<uint8_t>& packet)
       : timestamp(timestamp), raw_data(packet) {}
-  LoggedRtcpPacket(Timestamp timestamp, const std::string& packet)
+  LoggedRtcpPacket(Timestamp timestamp, absl::string_view packet)
       : timestamp(timestamp), raw_data(packet.size()) {
     memcpy(raw_data.data(), packet.data(), packet.size());
   }
@@ -100,7 +103,7 @@ struct LoggedRtcpPacketIncoming {
   LoggedRtcpPacketIncoming(Timestamp timestamp,
                            const std::vector<uint8_t>& packet)
       : rtcp(timestamp, packet) {}
-  LoggedRtcpPacketIncoming(Timestamp timestamp, const std::string& packet)
+  LoggedRtcpPacketIncoming(Timestamp timestamp, absl::string_view packet)
       : rtcp(timestamp, packet) {}
 
   int64_t log_time_us() const { return rtcp.timestamp.us(); }
@@ -114,7 +117,7 @@ struct LoggedRtcpPacketOutgoing {
   LoggedRtcpPacketOutgoing(Timestamp timestamp,
                            const std::vector<uint8_t>& packet)
       : rtcp(timestamp, packet) {}
-  LoggedRtcpPacketOutgoing(Timestamp timestamp, const std::string& packet)
+  LoggedRtcpPacketOutgoing(Timestamp timestamp, absl::string_view packet)
       : rtcp(timestamp, packet) {}
 
   int64_t log_time_us() const { return rtcp.timestamp.us(); }
@@ -213,8 +216,7 @@ struct LoggedRtcpPacketPli {
 
 struct LoggedRtcpPacketTransportFeedback {
   LoggedRtcpPacketTransportFeedback()
-      : transport_feedback(/*include_timestamps=*/true, /*include_lost*/ true) {
-  }
+      : transport_feedback(/*include_timestamps=*/true) {}
   LoggedRtcpPacketTransportFeedback(
       Timestamp timestamp,
       const rtcp::TransportFeedback& transport_feedback)

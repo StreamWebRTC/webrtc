@@ -123,7 +123,6 @@ if (is_ios || is_mac) {
     ]
 
     deps = [
-      "../rtc_base",
       "../rtc_base:checks",
       "../rtc_base:logging",
     ]
@@ -160,6 +159,7 @@ if (is_ios || is_mac) {
     frameworks = [
       "AVFoundation.framework",
       "CoreMedia.framework",
+      "Foundation.framework",
     ]
 
     configs += [
@@ -176,6 +176,7 @@ if (is_ios || is_mac) {
         "objc/helpers/UIDevice+RTCDevice.h",
         "objc/helpers/UIDevice+RTCDevice.mm",
       ]
+      frameworks += [ "UIKit.framework" ]
     }
   }
 
@@ -189,8 +190,8 @@ if (is_ios || is_mac) {
       deps = [
         ":base_objc",
         ":helpers_objc",
-        "../rtc_base",
         "../rtc_base:checks",
+        "../rtc_base:log_sinks",
         "../rtc_base:logging",
       ]
 
@@ -210,8 +211,9 @@ if (is_ios || is_mac) {
 
       deps = [
         ":base_objc",
-        "../rtc_base",
         "../rtc_base:checks",
+        "../rtc_base:file_rotating_stream",
+        "../rtc_base:log_sinks",
         "../rtc_base:logging",
       ]
 
@@ -231,14 +233,17 @@ if (is_ios || is_mac) {
           "objc/native/api/audio_device_module.h",
           "objc/native/api/audio_device_module.mm",
         ]
+        if (is_mac) {
+          frameworks = [ "AudioUnit.framework" ]
+        }
 
         deps = [
           ":audio_device",
+          "../api:make_ref_counted",
           "../modules/audio_device:audio_device_api",
           "../modules/audio_device:audio_device_generic",
           "../rtc_base:checks",
           "../rtc_base:logging",
-          "../rtc_base:refcount",
           "../system_wrappers",
         ]
       }
@@ -248,10 +253,7 @@ if (is_ios || is_mac) {
 
         sources = [ "objc/native/src/audio/audio_session_observer.h" ]
 
-        deps = [
-          "../rtc_base",
-          "../rtc_base:threading",
-        ]
+        deps = [ "../rtc_base:threading" ]
       }
 
       rtc_library("audio_device") {
@@ -273,14 +275,14 @@ if (is_ios || is_mac) {
           ":audio_session_observer",
           ":base_objc",
           "../api:array_view",
+          "../api:scoped_refptr",
           "../api:sequence_checker",
           "../api/task_queue",
           "../api/task_queue:default_task_queue_factory",
+          "../api/task_queue:pending_task_safety_flag",
           "../modules/audio_device:audio_device_api",
           "../modules/audio_device:audio_device_buffer",
           "../modules/audio_device:audio_device_generic",
-          "../rtc_base",
-          "../rtc_base:atomicops",
           "../rtc_base:buffer",
           "../rtc_base:checks",
           "../rtc_base:logging",
@@ -294,6 +296,9 @@ if (is_ios || is_mac) {
         absl_deps = [ "//third_party/abseil-cpp/absl/base:core_headers" ]
 
         frameworks = [ "AudioToolbox.framework" ]
+        if (is_mac) {
+          frameworks += [ "AudioUnit.framework" ]
+        }
       }
 
       # This target exists to expose :audio_session_objc and
@@ -350,8 +355,6 @@ if (is_ios || is_mac) {
         deps = [
           ":base_objc",
           ":helpers_objc",
-          "../rtc_base",
-          "../rtc_base:atomicops",
           "../rtc_base:checks",
           "../rtc_base/synchronization:mutex",
         ]
@@ -365,7 +368,6 @@ if (is_ios || is_mac) {
         sources = [ "objc/native/src/network_monitor_observer.h" ]
 
         deps = [
-          "../rtc_base",
           "../rtc_base:network_constants",
           "../rtc_base:stringutils",
           "../rtc_base:threading",
@@ -397,47 +399,68 @@ if (is_ios || is_mac) {
       }
     }
 
-    if (is_mac) {
-      rtc_library("native_api_audio_device_module") {
-        visibility = [ "*" ]
+    rtc_source_set("audio_device_api_objc") {
+      visibility = [ "*" ]
 
-        sources = [
-          "objc/native/api/audio_device_module.h",
-          "objc/native/api/audio_device_module.mm",
-        ]
+      sources = [ "objc/components/audio/RTCAudioDevice.h" ]
 
-        deps = [
-          ":audio_device",
-          "../modules/audio_device:audio_device_api",
-          "../modules/audio_device:audio_device_generic",
-          "../rtc_base:checks",
-          "../system_wrappers",
-        ]
+      public_configs = [ ":common_config_objc" ]
+
+      frameworks = [ "AudioToolbox.framework" ]
+
+      deps = [ ":base_objc" ]
+    }
+
+    rtc_library("audio_device_objc") {
+      visibility = [ "*" ]
+      allow_poison = [ "default_task_queue" ]
+      sources = [
+        "objc/native/src/objc_audio_device.h",
+        "objc/native/src/objc_audio_device.mm",
+        "objc/native/src/objc_audio_device_delegate.h",
+        "objc/native/src/objc_audio_device_delegate.mm",
+      ]
+
+      deps = [
+        ":audio_device_api_objc",
+        "../api:array_view",
+        "../api:make_ref_counted",
+        "../api:refcountedbase",
+        "../api:scoped_refptr",
+        "../api:sequence_checker",
+        "../api/task_queue",
+        "../api/task_queue:default_task_queue_factory",
+        "../modules/audio_device:audio_device_api",
+        "../modules/audio_device:audio_device_buffer",
+        "../rtc_base:buffer",
+        "../rtc_base:checks",
+        "../rtc_base:logging",
+        "../rtc_base:safe_minmax",
+        "../rtc_base:threading",
+        "../rtc_base:timeutils",
+      ]
+      if (is_mac) {
+        frameworks = [ "AudioUnit.framework" ]
       }
+    }
 
-      rtc_library("audio_device") {
-        visibility = [ "*" ]
+    rtc_library("objc_audio_device_module") {
+      visibility = [ "*" ]
+      allow_poison = [ "default_task_queue" ]
+      sources = [
+        "objc/native/api/objc_audio_device_module.h",
+        "objc/native/api/objc_audio_device_module.mm",
+      ]
 
-        sources = [
-          "objc/native/src/audio/helpers.h",
-          "objc/native/src/audio/helpers.mm",
-        ]
-
-        deps = [
-          ":base_objc",
-          "../api:array_view",
-          "../modules/audio_device:audio_device_api",
-          "../modules/audio_device:audio_device_buffer",
-          "../modules/audio_device:audio_device_generic",
-          "../rtc_base",
-          "../rtc_base:checks",
-          "../rtc_base:threading",
-          "../system_wrappers:field_trial",
-          "../system_wrappers:metrics",
-        ]
-        absl_deps = [ "//third_party/abseil-cpp/absl/base:core_headers" ]
-
-        frameworks = [ "AudioToolbox.framework" ]
+      deps = [
+        ":audio_device_api_objc",
+        ":audio_device_objc",
+        "../api:make_ref_counted",
+        "../modules/audio_device:audio_device_api",
+        "../rtc_base:logging",
+      ]
+      if (is_mac) {
+        frameworks = [ "AudioUnit.framework" ]
       }
     }
 
@@ -460,7 +483,6 @@ if (is_ios || is_mac) {
         "../common_video",
         "../media:rtc_media_base",
         "../pc:video_track_source_proxy",
-        "../rtc_base",
         "../rtc_base:checks",
         "../rtc_base:threading",
         "//third_party/libyuv",
@@ -548,7 +570,6 @@ if (is_ios || is_mac) {
         "../api/video:video_rtp_headers",
         "../common_video",
         "../media:rtc_media_base",
-        "../rtc_base",
         "../rtc_base:checks",
         "../rtc_base:logging",
       ]
@@ -751,6 +772,7 @@ if (is_ios || is_mac) {
         ":helpers_objc",
         "../api/video_codecs:video_codecs_api",
         "../common_video",
+        "../media:media_constants",
         "../media:rtc_media_base",
         "../modules/video_coding:video_codec_interface",
         "../rtc_base:checks",
@@ -776,6 +798,16 @@ if (is_ios || is_mac) {
         ":vp9",
         ":vpx_codec_constants",
       ]
+
+      defines = []
+      if (enable_libaom) {
+        defines += [ "RTC_USE_LIBAOM_AV1_ENCODER" ]
+        deps += [ ":libaom_av1_encoder" ]
+      }
+
+      if (rtc_include_dav1d_in_internal_decoder_factory) {
+        deps += [ ":dav1d_decoder" ]
+      }
     }
 
     rtc_library("vpx_codec_constants") {
@@ -787,6 +819,7 @@ if (is_ios || is_mac) {
 
       deps = [
         ":base_objc",
+        "../media:media_constants",
         "../media:rtc_media_base",
       ]
     }
@@ -826,12 +859,26 @@ if (is_ios || is_mac) {
       ]
     }
 
-    rtc_library("av1") {
+    rtc_library("dav1d_decoder") {
       visibility = [ "*" ]
       allow_poison = [ "software_video_codecs" ]
       sources = [
         "objc/api/video_codec/RTCVideoDecoderAV1.h",
         "objc/api/video_codec/RTCVideoDecoderAV1.mm",
+      ]
+
+      deps = [
+        ":base_objc",
+        ":wrapped_native_codec_objc",
+        "../media:rtc_media_base",
+        "../modules/video_coding/codecs/av1:dav1d_decoder",
+      ]
+    }
+
+    rtc_library("libaom_av1_encoder") {
+      visibility = [ "*" ]
+      allow_poison = [ "software_video_codecs" ]
+      sources = [
         "objc/api/video_codec/RTCVideoEncoderAV1.h",
         "objc/api/video_codec/RTCVideoEncoderAV1.mm",
       ]
@@ -982,7 +1029,6 @@ if (is_ios || is_mac) {
         "../api/video:encoded_image",
         "../api/video_codecs:video_codecs_api",
         "../modules/video_coding:video_codec_interface",
-        "../rtc_base",
         "../rtc_base:refcount",
         "../rtc_base:safe_conversions",
       ]
@@ -1127,6 +1173,7 @@ if (is_ios || is_mac) {
       public_configs = [ ":common_config_objc" ]
 
       deps = [
+        ":audio_device_api_objc",
         ":base_native_additions_objc",
         ":base_objc",
         ":file_logger_objc",
@@ -1135,16 +1182,19 @@ if (is_ios || is_mac) {
         ":mediasource_objc",
         ":native_api",
         ":native_video",
+        ":objc_audio_device_module",
         ":videoframebuffer_objc",
         ":videorendereradapter_objc",
         ":videosource_objc",
         ":videotoolbox_objc",
+        "../api:dtmf_sender_interface",
         "../api/crypto:frame_crypto_transformer",
         "../api:libjingle_peerconnection_api",
         "../api:media_stream_interface",
         "../api:rtc_event_log_output_file",
         "../api:rtc_stats_api",
         "../api:rtp_parameters",
+        "../api:rtp_sender_interface",
         "../api:scoped_refptr",
         "../api/audio_codecs:audio_codecs_api",
         "../api/audio_codecs:builtin_audio_decoder_factory",
@@ -1158,6 +1208,8 @@ if (is_ios || is_mac) {
         "../api/video:video_rtp_headers",
         "../api/video_codecs:video_codecs_api",
         "../common_video",
+        "../media:media_constants",
+        "../media:rtc_audio_video",
         "../media:rtc_media_base",
         "../modules/audio_device:audio_device_api",
         "../modules/audio_processing",
@@ -1165,13 +1217,15 @@ if (is_ios || is_mac) {
         "../modules/video_coding:video_codec_interface",
         "../pc:peer_connection_factory",
         "../pc:webrtc_sdp",
-        "../rtc_base",
         "../rtc_base:checks",
         "../rtc_base:event_tracer",
         "../rtc_base:logging",
         "../rtc_base:network_constants",
+        "../rtc_base:rtc_certificate_generator",
         "../rtc_base:safe_conversions",
+        "../rtc_base:ssl",
         "../rtc_base:stringutils",
+        "../rtc_base:threading",
         "../rtc_base:timeutils",
         "../stats:rtc_stats",
         "../system_wrappers:field_trial",
@@ -1191,6 +1245,8 @@ if (is_ios || is_mac) {
 
           sources = [
             "objc/unittests/ObjCVideoTrackSource_xctest.mm",
+            "objc/unittests/RTCAudioDeviceModule_xctest.mm",
+            "objc/unittests/RTCAudioDevice_xctest.mm",
             "objc/unittests/RTCAudioSessionTest.mm",
             "objc/unittests/RTCCVPixelBuffer_xctest.mm",
             "objc/unittests/RTCCallbackLogger_xctest.m",
@@ -1223,15 +1279,6 @@ if (is_ios || is_mac) {
           # workaround.
           defines = [ "GLES_SILENCE_DEPRECATION" ]
 
-          # TODO(peterhanspers): Reenable these tests on simulator.
-          # See bugs.webrtc.org/7812
-          if (target_environment != "simulator") {
-            sources += [
-              "objc/unittests/RTCAudioDeviceModule_xctest.mm",
-              "objc/unittests/RTCAudioDevice_xctest.mm",
-            ]
-          }
-
           deps = [
             ":audio_device",
             ":audio_session_objc",
@@ -1259,19 +1306,18 @@ if (is_ios || is_mac) {
             "../api/video:video_frame",
             "../api/video_codecs:video_codecs_api",
             "../common_video",
+            "../media:codec",
             "../media:rtc_media_base",
             "../media:rtc_media_tests_utils",
             "../modules/audio_device:audio_device_api",
             "../modules/audio_processing:api",
             "../modules/video_coding:video_codec_interface",
-            "../rtc_base",
             "../rtc_base:gunit_helpers",
             "../rtc_base:macromagic",
             "../rtc_base:refcount",
             "../rtc_base:rtc_event",
             "../rtc_base/system:unused",
             "../system_wrappers",
-            "../test:test_support",  # TODO(webrtc:8382): Remove use of gtest
             "//third_party/libyuv",
           ]
 
@@ -1308,7 +1354,6 @@ if (is_ios || is_mac) {
             ":peerconnectionfactory_base_objc",
             ":sdk_unittests_bundle_data",
             ":sdk_unittests_sources",
-            "../rtc_base",
             "../rtc_base:threading",
             "//test:test_support",
           ]
@@ -1328,7 +1373,6 @@ if (is_ios || is_mac) {
           deps = [
             ":framework_objc+link",
             ":ios_framework_bundle",
-            "../rtc_base",
             "../rtc_base:threading",
             "//test:test_support",
           ]
@@ -1362,6 +1406,7 @@ if (is_ios || is_mac) {
           "objc/base/RTCVideoFrameBuffer.h",
           "objc/base/RTCVideoRenderer.h",
           "objc/base/RTCYUVPlanarBuffer.h",
+          "objc/components/audio/RTCAudioDevice.h",
           "objc/components/audio/RTCAudioSession.h",
           "objc/components/audio/RTCAudioSessionConfiguration.h",
           "objc/components/capturer/RTCCameraVideoCapturer.h",
@@ -1492,6 +1537,8 @@ if (is_ios || is_mac) {
           "AVFoundation.framework",
           "CoreGraphics.framework",
           "CoreMedia.framework",
+          "Foundation.framework",
+          "UIKit.framework",
         ]
 
         configs = [
@@ -1684,6 +1731,7 @@ if (is_ios || is_mac) {
         ":base_objc",
         ":helpers_objc",
         "../api/video_codecs:video_codecs_api",
+        "../media:codec",
         "../media:rtc_media_base",
       ]
     }
@@ -1720,16 +1768,17 @@ if (is_ios || is_mac) {
         ":native_video",
         ":videoframebuffer_objc",
         "../api:libjingle_peerconnection_api",
+        "../api:make_ref_counted",
         "../api:media_stream_interface",
         "../api:scoped_refptr",
         "../api/video:video_frame",
         "../api/video:video_rtp_headers",
         "../api/video_codecs:video_codecs_api",
         "../common_video",
-        "../rtc_base",
+        "../pc:video_track_source_proxy",
         "../rtc_base:buffer",
         "../rtc_base:logging",
-        "../rtc_base:refcount",
+        "../rtc_base:ssl",
         "../rtc_base:threading",
       ]
       if (is_ios) {
@@ -1752,13 +1801,11 @@ if (is_ios || is_mac) {
           ":network_monitor_observer",
           "../api:field_trials_view",
           "../api:sequence_checker",
-          "../rtc_base",
+          "../api/task_queue:pending_task_safety_flag",
           "../rtc_base:logging",
           "../rtc_base:macromagic",
           "../rtc_base:stringutils",
           "../rtc_base:threading",
-          "../rtc_base/task_utils:pending_task_safety_flag",
-          "../rtc_base/task_utils:to_queued_task",
         ]
 
         absl_deps = [ "//third_party/abseil-cpp/absl/strings" ]
@@ -1793,14 +1840,15 @@ if (is_ios || is_mac) {
         ":videoframebuffer_objc",
         ":vpx_codec_constants",
         ":wrapped_native_codec_objc",
+        "../api:make_ref_counted",
         "../api/video:video_frame",
         "../api/video:video_rtp_headers",
         "../api/video_codecs:video_codecs_api",
         "../common_video",
+        "../media:codec",
         "../media:rtc_audio_video",
         "../media:rtc_media_base",
         "../modules/video_coding:video_codec_interface",
-        "../rtc_base",
         "../rtc_base:checks",
         "../rtc_base:logging",
         "../rtc_base:timestamp_aligner",

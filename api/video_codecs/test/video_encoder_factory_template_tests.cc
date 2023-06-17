@@ -17,12 +17,14 @@
 #include "test/gmock.h"
 #include "test/gtest.h"
 
+using ::testing::Contains;
 using ::testing::Each;
 using ::testing::Eq;
 using ::testing::Field;
 using ::testing::IsEmpty;
-using ::testing::Ne;
+using ::testing::IsNull;
 using ::testing::Not;
+using ::testing::NotNull;
 using ::testing::UnorderedElementsAre;
 
 namespace webrtc {
@@ -67,8 +69,8 @@ struct BarEncoderTemplateAdapter {
 TEST(VideoEncoderFactoryTemplate, OneTemplateAdapterCreateEncoder) {
   VideoEncoderFactoryTemplate<FooEncoderTemplateAdapter> factory;
   EXPECT_THAT(factory.GetSupportedFormats(), UnorderedElementsAre(kFooSdp));
-  EXPECT_THAT(factory.CreateVideoEncoder(kFooSdp), Ne(nullptr));
-  EXPECT_THAT(factory.CreateVideoEncoder(SdpVideoFormat("FooX")), Eq(nullptr));
+  EXPECT_THAT(factory.CreateVideoEncoder(kFooSdp), NotNull());
+  EXPECT_THAT(factory.CreateVideoEncoder(SdpVideoFormat("FooX")), IsNull());
 }
 
 TEST(VideoEncoderFactoryTemplate, OneTemplateAdapterCodecSupport) {
@@ -96,11 +98,11 @@ TEST(VideoEncoderFactoryTemplate, TwoTemplateAdaptersCreateEncoders) {
       factory;
   EXPECT_THAT(factory.GetSupportedFormats(),
               UnorderedElementsAre(kFooSdp, kBarLowSdp, kBarHighSdp));
-  EXPECT_THAT(factory.CreateVideoEncoder(kFooSdp), Ne(nullptr));
-  EXPECT_THAT(factory.CreateVideoEncoder(kBarLowSdp), Ne(nullptr));
-  EXPECT_THAT(factory.CreateVideoEncoder(kBarHighSdp), Ne(nullptr));
-  EXPECT_THAT(factory.CreateVideoEncoder(SdpVideoFormat("FooX")), Eq(nullptr));
-  EXPECT_THAT(factory.CreateVideoEncoder(SdpVideoFormat("Bar")), Eq(nullptr));
+  EXPECT_THAT(factory.CreateVideoEncoder(kFooSdp), NotNull());
+  EXPECT_THAT(factory.CreateVideoEncoder(kBarLowSdp), NotNull());
+  EXPECT_THAT(factory.CreateVideoEncoder(kBarHighSdp), NotNull());
+  EXPECT_THAT(factory.CreateVideoEncoder(SdpVideoFormat("FooX")), IsNull());
+  EXPECT_THAT(factory.CreateVideoEncoder(SdpVideoFormat("Bar")), NotNull());
 }
 
 TEST(VideoEncoderFactoryTemplate, TwoTemplateAdaptersCodecSupport) {
@@ -125,9 +127,12 @@ TEST(VideoEncoderFactoryTemplate, TwoTemplateAdaptersCodecSupport) {
 
 TEST(VideoEncoderFactoryTemplate, LibvpxVp8) {
   VideoEncoderFactoryTemplate<LibvpxVp8EncoderTemplateAdapter> factory;
-  const SdpVideoFormat kVp8Sdp("VP8");
-  EXPECT_THAT(factory.GetSupportedFormats(), UnorderedElementsAre(kVp8Sdp));
-  EXPECT_THAT(factory.CreateVideoEncoder(kVp8Sdp), Ne(nullptr));
+  auto formats = factory.GetSupportedFormats();
+  EXPECT_THAT(formats.size(), 1);
+  EXPECT_THAT(formats[0], Field(&SdpVideoFormat::name, "VP8"));
+  EXPECT_THAT(formats[0], Field(&SdpVideoFormat::scalability_modes,
+                                Contains(ScalabilityMode::kL1T3)));
+  EXPECT_THAT(factory.CreateVideoEncoder(formats[0]), NotNull());
 }
 
 TEST(VideoEncoderFactoryTemplate, LibvpxVp9) {
@@ -135,7 +140,9 @@ TEST(VideoEncoderFactoryTemplate, LibvpxVp9) {
   auto formats = factory.GetSupportedFormats();
   EXPECT_THAT(formats, Not(IsEmpty()));
   EXPECT_THAT(formats, Each(Field(&SdpVideoFormat::name, "VP9")));
-  EXPECT_THAT(factory.CreateVideoEncoder(formats[0]), Ne(nullptr));
+  EXPECT_THAT(formats, Each(Field(&SdpVideoFormat::scalability_modes,
+                                  Contains(ScalabilityMode::kL3T3_KEY))));
+  EXPECT_THAT(factory.CreateVideoEncoder(formats[0]), NotNull());
 }
 
 // TODO(bugs.webrtc.org/13573): When OpenH264 is no longer a conditional build
@@ -146,15 +153,20 @@ TEST(VideoEncoderFactoryTemplate, OpenH264) {
   auto formats = factory.GetSupportedFormats();
   EXPECT_THAT(formats, Not(IsEmpty()));
   EXPECT_THAT(formats, Each(Field(&SdpVideoFormat::name, "H264")));
-  EXPECT_THAT(factory.CreateVideoEncoder(formats[0]), Ne(nullptr));
+  EXPECT_THAT(formats, Each(Field(&SdpVideoFormat::scalability_modes,
+                                  Contains(ScalabilityMode::kL1T3))));
+  EXPECT_THAT(factory.CreateVideoEncoder(formats[0]), NotNull());
 }
 #endif  // defined(WEBRTC_USE_H264)
 
 TEST(VideoEncoderFactoryTemplate, LibaomAv1) {
   VideoEncoderFactoryTemplate<LibaomAv1EncoderTemplateAdapter> factory;
-  const SdpVideoFormat kAv1Sdp("AV1");
-  EXPECT_THAT(factory.GetSupportedFormats(), UnorderedElementsAre(kAv1Sdp));
-  EXPECT_THAT(factory.CreateVideoEncoder(kAv1Sdp), Ne(nullptr));
+  auto formats = factory.GetSupportedFormats();
+  EXPECT_THAT(formats.size(), 1);
+  EXPECT_THAT(formats[0], Field(&SdpVideoFormat::name, "AV1"));
+  EXPECT_THAT(formats[0], Field(&SdpVideoFormat::scalability_modes,
+                                Contains(ScalabilityMode::kL3T3_KEY)));
+  EXPECT_THAT(factory.CreateVideoEncoder(formats[0]), NotNull());
 }
 
 }  // namespace

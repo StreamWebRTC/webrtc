@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "absl/base/attributes.h"
+#include "absl/strings/string_view.h"
 #include "api/rtc_event_log/rtc_event_log.h"
 #include "call/video_receive_stream.h"
 #include "call/video_send_stream.h"
@@ -39,6 +40,7 @@
 #include "logging/rtc_event_log/events/rtc_event_generic_packet_sent.h"
 #include "logging/rtc_event_log/events/rtc_event_ice_candidate_pair.h"
 #include "logging/rtc_event_log/events/rtc_event_ice_candidate_pair_config.h"
+#include "logging/rtc_event_log/events/rtc_event_neteq_set_minimum_delay.h"
 #include "logging/rtc_event_log/events/rtc_event_probe_cluster_created.h"
 #include "logging/rtc_event_log/events/rtc_event_probe_result_failure.h"
 #include "logging/rtc_event_log/events/rtc_event_probe_result_success.h"
@@ -379,13 +381,13 @@ class ParsedRtcEventLog {
   void Clear();
 
   // Reads an RtcEventLog file and returns success if parsing was successful.
-  ParseStatus ParseFile(const std::string& file_name);
+  ParseStatus ParseFile(absl::string_view file_name);
 
   // Reads an RtcEventLog from a string and returns success if successful.
-  ParseStatus ParseString(const std::string& s);
+  ParseStatus ParseString(absl::string_view s);
 
   // Reads an RtcEventLog from an string and returns success if successful.
-  ParseStatus ParseStream(const std::string& s);
+  ParseStatus ParseStream(absl::string_view s);
 
   MediaType GetMediaType(uint32_t ssrc, PacketDirection direction) const;
 
@@ -448,6 +450,11 @@ class ParsedRtcEventLog {
   const std::map<uint32_t, std::vector<LoggedAudioPlayoutEvent>>&
   audio_playout_events() const {
     return audio_playout_events_;
+  }
+
+  const std::map<uint32_t, std::vector<LoggedNetEqSetMinimumDelayEvent>>&
+  neteq_set_minimum_delay_events() const {
+    return neteq_set_minimum_delay_events_;
   }
 
   const std::vector<LoggedAudioNetworkAdaptationEvent>&
@@ -724,6 +731,9 @@ class ParsedRtcEventLog {
   ParsedRtcEventLog::ParseStatusOr<LoggedIceCandidatePairEvent>
   GetIceCandidatePairEvent(const rtclog::Event& event) const;
 
+  ParsedRtcEventLog::ParseStatusOr<LoggedRemoteEstimateEvent>
+  GetRemoteEstimateEvent(const rtclog::Event& event) const;
+
   // Parsing functions for new format.
   ParseStatus StoreAlrStateEvent(const rtclog2::AlrState& proto);
   ParseStatus StoreAudioNetworkAdaptationEvent(
@@ -759,6 +769,8 @@ class ParsedRtcEventLog {
   ParseStatus StoreIncomingRtcpPackets(
       const rtclog2::IncomingRtcpPackets& proto);
   ParseStatus StoreIncomingRtpPackets(const rtclog2::IncomingRtpPackets& proto);
+  ParseStatus StoreNetEqSetMinimumDelay(
+      const rtclog2::NetEqSetMinimumDelay& proto);
   ParseStatus StoreOutgoingRtcpPackets(
       const rtclog2::OutgoingRtcpPackets& proto);
   ParseStatus StoreOutgoingRtpPackets(const rtclog2::OutgoingRtpPackets& proto);
@@ -854,6 +866,8 @@ class ParsedRtcEventLog {
 
   std::map<uint32_t, std::vector<LoggedAudioPlayoutEvent>>
       audio_playout_events_;
+  std::map<uint32_t, std::vector<LoggedNetEqSetMinimumDelayEvent>>
+      neteq_set_minimum_delay_events_;
 
   std::vector<LoggedAudioNetworkAdaptationEvent>
       audio_network_adaptation_events_;

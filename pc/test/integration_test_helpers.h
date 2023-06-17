@@ -28,6 +28,7 @@
 
 #include "absl/algorithm/container.h"
 #include "absl/memory/memory.h"
+#include "absl/strings/string_view.h"
 #include "absl/types/optional.h"
 #include "api/audio_options.h"
 #include "api/call/call_factory_interface.h"
@@ -52,9 +53,11 @@
 #include "api/stats/rtc_stats_report.h"
 #include "api/stats/rtcstats_objects.h"
 #include "api/task_queue/default_task_queue_factory.h"
+#include "api/task_queue/pending_task_safety_flag.h"
 #include "api/task_queue/task_queue_factory.h"
 #include "api/transport/field_trial_based_config.h"
 #include "api/uma_metrics.h"
+#include "api/units/time_delta.h"
 #include "api/video/video_rotation.h"
 #include "api/video_codecs/sdp_video_format.h"
 #include "api/video_codecs/video_decoder_factory.h"
@@ -104,17 +107,14 @@
 #include "rtc_base/gunit.h"
 #include "rtc_base/helpers.h"
 #include "rtc_base/ip_address.h"
-#include "rtc_base/location.h"
 #include "rtc_base/logging.h"
 #include "rtc_base/mdns_responder_interface.h"
 #include "rtc_base/numerics/safe_conversions.h"
-#include "rtc_base/ref_counted_object.h"
 #include "rtc_base/rtc_certificate_generator.h"
 #include "rtc_base/socket_address.h"
 #include "rtc_base/ssl_stream_adapter.h"
-#include "rtc_base/task_utils/pending_task_safety_flag.h"
+#include "rtc_base/task_queue_for_test.h"
 #include "rtc_base/task_utils/repeating_task.h"
-#include "rtc_base/task_utils/to_queued_task.h"
 #include "rtc_base/test_certificate_verifier.h"
 #include "rtc_base/thread.h"
 #include "rtc_base/thread_annotations.h"
@@ -173,25 +173,22 @@ void RemoveSsrcsAndKeepMsids(cricket::SessionDescription* desc);
 
 int FindFirstMediaStatsIndexByKind(
     const std::string& kind,
-    const std::vector<const webrtc::RTCMediaStreamTrackStats*>&
-        media_stats_vec);
+    const std::vector<const webrtc::RTCInboundRtpStreamStats*>& inbound_rtps);
 
 class TaskQueueMetronome : public webrtc::Metronome {
  public:
-  TaskQueueMetronome(TaskQueueFactory* factory, TimeDelta tick_period);
+  explicit TaskQueueMetronome(TimeDelta tick_period);
   ~TaskQueueMetronome() override;
 
   // webrtc::Metronome implementation.
-  void AddListener(TickListener* listener) override;
-  void RemoveListener(TickListener* listener) override;
+  void RequestCallOnNextTick(absl::AnyInvocable<void() &&> callback) override;
   TimeDelta TickPeriod() const override;
 
  private:
-  Mutex mutex_;
   const TimeDelta tick_period_;
-  std::set<TickListener*> listeners_ RTC_GUARDED_BY(mutex_);
-  RepeatingTaskHandle tick_task_;
-  rtc::TaskQueue queue_;
+  SequenceChecker sequence_checker_{SequenceChecker::kDetached};
+  std::vector<absl::AnyInvocable<void() &&>> callbacks_;
+  ScopedTaskSafetyDetached safety_;
 };
 
 class SignalingMessageReceiver {
@@ -409,6 +406,11 @@ class PeerConnectionIntegrationWrapper : public webrtc::PeerConnectionObserver,
 
   bool SignalingStateStable() {
     return pc()->signaling_state() == webrtc::PeerConnectionInterface::kStable;
+  }
+
+  bool IceGatheringStateComplete() {
+    return pc()->ice_gathering_state() ==
+           webrtc::PeerConnectionInterface::kIceGatheringComplete;
   }
 
   void CreateDataChannel() { CreateDataChannel(nullptr); }
@@ -645,34 +647,26 @@ class PeerConnectionIntegrationWrapper : public webrtc::PeerConnectionObserver,
   void StartWatchingDelayStats() {
     // Get the baseline numbers for audio_packets and audio_delay.
     auto received_stats = NewGetStats();
-    auto track_stats =
-        received_stats->GetStatsOfType<webrtc::RTCMediaStreamTrackStats>()[0];
-    ASSERT_TRUE(track_stats->relative_packet_arrival_delay.is_defined());
     auto rtp_stats =
-        received_stats->GetStatsOfType<webrtc::RTCInboundRTPStreamStats>()[0];
+        received_stats->GetStatsOfType<webrtc::RTCInboundRtpStreamStats>()[0];
+    ASSERT_TRUE(rtp_stats->relative_packet_arrival_delay.is_defined());
     ASSERT_TRUE(rtp_stats->packets_received.is_defined());
     ASSERT_TRUE(rtp_stats->track_id.is_defined());
-    audio_track_stats_id_ = track_stats->id();
-    ASSERT_TRUE(received_stats->Get(audio_track_stats_id_));
     rtp_stats_id_ = rtp_stats->id();
-    ASSERT_EQ(audio_track_stats_id_, *rtp_stats->track_id);
     audio_packets_stat_ = *rtp_stats->packets_received;
-    audio_delay_stat_ = *track_stats->relative_packet_arrival_delay;
-    audio_samples_stat_ = *track_stats->total_samples_received;
-    audio_concealed_stat_ = *track_stats->concealed_samples;
+    audio_delay_stat_ = *rtp_stats->relative_packet_arrival_delay;
+    audio_samples_stat_ = *rtp_stats->total_samples_received;
+    audio_concealed_stat_ = *rtp_stats->concealed_samples;
   }
 
   void UpdateDelayStats(std::string tag, int desc_size) {
     auto report = NewGetStats();
-    auto track_stats =
-        report->GetAs<webrtc::RTCMediaStreamTrackStats>(audio_track_stats_id_);
-    ASSERT_TRUE(track_stats);
     auto rtp_stats =
-        report->GetAs<webrtc::RTCInboundRTPStreamStats>(rtp_stats_id_);
+        report->GetAs<webrtc::RTCInboundRtpStreamStats>(rtp_stats_id_);
     ASSERT_TRUE(rtp_stats);
     auto delta_packets = *rtp_stats->packets_received - audio_packets_stat_;
     auto delta_rpad =
-        *track_stats->relative_packet_arrival_delay - audio_delay_stat_;
+        *rtp_stats->relative_packet_arrival_delay - audio_delay_stat_;
     auto recent_delay = delta_packets > 0 ? delta_rpad / delta_packets : -1;
     // The purpose of these checks is to sound the alarm early if we introduce
     // serious regressions. The numbers are not acceptable for production, but
@@ -689,9 +683,9 @@ class PeerConnectionIntegrationWrapper : public webrtc::PeerConnectionObserver,
     EXPECT_GT(0.1, recent_delay) << tag << " size " << desc_size;
 #endif
     auto delta_samples =
-        *track_stats->total_samples_received - audio_samples_stat_;
+        *rtp_stats->total_samples_received - audio_samples_stat_;
     auto delta_concealed =
-        *track_stats->concealed_samples - audio_concealed_stat_;
+        *rtp_stats->concealed_samples - audio_concealed_stat_;
     // These limits should be adjusted down as we improve:
     //
     // Concealing more than 4000 samples during a renegotiation is unacceptable.
@@ -726,9 +720,9 @@ class PeerConnectionIntegrationWrapper : public webrtc::PeerConnectionObserver,
     }
     // Increment trailing counters
     audio_packets_stat_ = *rtp_stats->packets_received;
-    audio_delay_stat_ = *track_stats->relative_packet_arrival_delay;
-    audio_samples_stat_ = *track_stats->total_samples_received;
-    audio_concealed_stat_ = *track_stats->concealed_samples;
+    audio_delay_stat_ = *rtp_stats->relative_packet_arrival_delay;
+    audio_samples_stat_ = *rtp_stats->total_samples_received;
+    audio_concealed_stat_ = *rtp_stats->concealed_samples;
   }
 
   // Sets number of candidates expected
@@ -776,8 +770,8 @@ class PeerConnectionIntegrationWrapper : public webrtc::PeerConnectionObserver,
     pc_factory_dependencies.task_queue_factory =
         webrtc::CreateDefaultTaskQueueFactory();
     pc_factory_dependencies.trials = std::make_unique<FieldTrialBasedConfig>();
-    pc_factory_dependencies.metronome = std::make_unique<TaskQueueMetronome>(
-        pc_factory_dependencies.task_queue_factory.get(), TimeDelta::Millis(8));
+    pc_factory_dependencies.metronome =
+        std::make_unique<TaskQueueMetronome>(TimeDelta::Millis(8));
     cricket::MediaEngineDependencies media_deps;
     media_deps.task_queue_factory =
         pc_factory_dependencies.task_queue_factory.get();
@@ -874,9 +868,9 @@ class PeerConnectionIntegrationWrapper : public webrtc::PeerConnectionObserver,
     video_track_sources_.emplace_back(
         rtc::make_ref_counted<webrtc::FakePeriodicVideoTrackSource>(
             config, false /* remote */));
-    rtc::scoped_refptr<webrtc::VideoTrackInterface> track(
-        peer_connection_factory_->CreateVideoTrack(
-            rtc::CreateRandomUuid(), video_track_sources_.back().get()));
+    rtc::scoped_refptr<webrtc::VideoTrackInterface> track =
+        peer_connection_factory_->CreateVideoTrack(video_track_sources_.back(),
+                                                   rtc::CreateRandomUuid());
     if (!local_video_renderer_) {
       local_video_renderer_.reset(
           new webrtc::FakeVideoTrackRenderer(track.get()));
@@ -1003,11 +997,11 @@ class PeerConnectionIntegrationWrapper : public webrtc::PeerConnectionObserver,
       RelaySdpMessageIfReceiverExists(type, msg);
     } else {
       rtc::Thread::Current()->PostDelayedTask(
-          ToQueuedTask(task_safety_.flag(),
-                       [this, type, msg] {
-                         RelaySdpMessageIfReceiverExists(type, msg);
-                       }),
-          signaling_delay_ms_);
+          SafeTask(task_safety_.flag(),
+                   [this, type, msg] {
+                     RelaySdpMessageIfReceiverExists(type, msg);
+                   }),
+          TimeDelta::Millis(signaling_delay_ms_));
     }
   }
 
@@ -1026,12 +1020,12 @@ class PeerConnectionIntegrationWrapper : public webrtc::PeerConnectionObserver,
       RelayIceMessageIfReceiverExists(sdp_mid, sdp_mline_index, msg);
     } else {
       rtc::Thread::Current()->PostDelayedTask(
-          ToQueuedTask(task_safety_.flag(),
-                       [this, sdp_mid, sdp_mline_index, msg] {
-                         RelayIceMessageIfReceiverExists(sdp_mid,
-                                                         sdp_mline_index, msg);
-                       }),
-          signaling_delay_ms_);
+          SafeTask(task_safety_.flag(),
+                   [this, sdp_mid, sdp_mline_index, msg] {
+                     RelayIceMessageIfReceiverExists(sdp_mid, sdp_mline_index,
+                                                     msg);
+                   }),
+          TimeDelta::Millis(signaling_delay_ms_));
     }
   }
 
@@ -1235,7 +1229,6 @@ class PeerConnectionIntegrationWrapper : public webrtc::PeerConnectionObserver,
   uint64_t audio_samples_stat_ = 0;
   uint64_t audio_concealed_stat_ = 0;
   std::string rtp_stats_id_;
-  std::string audio_track_stats_id_;
 
   ScopedTaskSafety task_safety_;
 
@@ -1246,7 +1239,7 @@ class MockRtcEventLogOutput : public webrtc::RtcEventLogOutput {
  public:
   virtual ~MockRtcEventLogOutput() = default;
   MOCK_METHOD(bool, IsActive, (), (const, override));
-  MOCK_METHOD(bool, Write, (const std::string&), (override));
+  MOCK_METHOD(bool, Write, (absl::string_view), (override));
 };
 
 // This helper object is used for both specifying how many audio/video frames
@@ -1424,7 +1417,7 @@ class PeerConnectionIntegrationBaseTest : public ::testing::Test {
 
     // If turn servers were created for the test they need to be destroyed on
     // the network thread.
-    network_thread()->Invoke<void>(RTC_FROM_HERE, [this] {
+    SendTask(network_thread(), [this] {
       turn_servers_.clear();
       turn_customizers_.clear();
     });
@@ -1636,25 +1629,22 @@ class PeerConnectionIntegrationBaseTest : public ::testing::Test {
       const std::string& common_name = "test turn server") {
     rtc::Thread* thread = network_thread();
     rtc::SocketFactory* socket_factory = fss_.get();
-    std::unique_ptr<cricket::TestTurnServer> turn_server =
-        network_thread()->Invoke<std::unique_ptr<cricket::TestTurnServer>>(
-            RTC_FROM_HERE, [thread, socket_factory, internal_address,
-                            external_address, type, common_name] {
-              return std::make_unique<cricket::TestTurnServer>(
-                  thread, socket_factory, internal_address, external_address,
-                  type,
-                  /*ignore_bad_certs=*/true, common_name);
-            });
+    std::unique_ptr<cricket::TestTurnServer> turn_server;
+    SendTask(network_thread(), [&] {
+      turn_server = std::make_unique<cricket::TestTurnServer>(
+          thread, socket_factory, internal_address, external_address, type,
+          /*ignore_bad_certs=*/true, common_name);
+    });
     turn_servers_.push_back(std::move(turn_server));
     // Interactions with the turn server should be done on the network thread.
     return turn_servers_.back().get();
   }
 
   cricket::TestTurnCustomizer* CreateTurnCustomizer() {
-    std::unique_ptr<cricket::TestTurnCustomizer> turn_customizer =
-        network_thread()->Invoke<std::unique_ptr<cricket::TestTurnCustomizer>>(
-            RTC_FROM_HERE,
-            [] { return std::make_unique<cricket::TestTurnCustomizer>(); });
+    std::unique_ptr<cricket::TestTurnCustomizer> turn_customizer;
+    SendTask(network_thread(), [&] {
+      turn_customizer = std::make_unique<cricket::TestTurnCustomizer>();
+    });
     turn_customizers_.push_back(std::move(turn_customizer));
     // Interactions with the turn customizer should be done on the network
     // thread.
@@ -1665,16 +1655,10 @@ class PeerConnectionIntegrationBaseTest : public ::testing::Test {
   // 0.
   void ExpectTurnCustomizerCountersIncremented(
       cricket::TestTurnCustomizer* turn_customizer) {
-    unsigned int allow_channel_data_counter =
-        network_thread()->Invoke<unsigned int>(
-            RTC_FROM_HERE, [turn_customizer] {
-              return turn_customizer->allow_channel_data_cnt_;
-            });
-    EXPECT_GT(allow_channel_data_counter, 0u);
-    unsigned int modify_counter = network_thread()->Invoke<unsigned int>(
-        RTC_FROM_HERE,
-        [turn_customizer] { return turn_customizer->modify_cnt_; });
-    EXPECT_GT(modify_counter, 0u);
+    SendTask(network_thread(), [turn_customizer] {
+      EXPECT_GT(turn_customizer->allow_channel_data_cnt_, 0u);
+      EXPECT_GT(turn_customizer->modify_cnt_, 0u);
+    });
   }
 
   // Once called, SDP blobs and ICE candidates will be automatically signaled
@@ -1753,10 +1737,10 @@ class PeerConnectionIntegrationBaseTest : public ::testing::Test {
   }
 
   void SetPortAllocatorFlags(uint32_t caller_flags, uint32_t callee_flags) {
-    network_thread()->Invoke<void>(RTC_FROM_HERE, [this, caller_flags] {
+    SendTask(network_thread(), [this, caller_flags] {
       caller()->port_allocator()->set_flags(caller_flags);
     });
-    network_thread()->Invoke<void>(RTC_FROM_HERE, [this, callee_flags] {
+    SendTask(network_thread(), [this, callee_flags] {
       callee()->port_allocator()->set_flags(callee_flags);
     });
   }

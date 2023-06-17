@@ -36,6 +36,11 @@ class TransformableFrameInterface {
   virtual uint8_t GetPayloadType() const = 0;
   virtual uint32_t GetSsrc() const = 0;
   virtual uint32_t GetTimestamp() const = 0;
+  // TODO(https://bugs.webrtc.org/14878): Change this to pure virtual after it
+  // is implemented everywhere.
+  virtual absl::optional<Timestamp> GetCaptureTimeIdentifier() const {
+    return absl::nullopt;
+  }
 
   enum class Direction {
     kUnknown,
@@ -53,14 +58,11 @@ class TransformableVideoFrameInterface : public TransformableFrameInterface {
   virtual ~TransformableVideoFrameInterface() = default;
   virtual bool IsKeyFrame() const = 0;
 
-  // Returns data needed in the frame transformation logic; for example,
-  // when the transformation applied to the frame is encryption/decryption, the
-  // additional data holds the serialized generic frame descriptor extension
-  // calculated in webrtc::RtpDescriptorAuthentication.
-  // TODO(bugs.webrtc.org/11380) remove from interface once
-  // webrtc::RtpDescriptorAuthentication is exposed in api/.
-  virtual std::vector<uint8_t> GetAdditionalData() const = 0;
+  virtual VideoFrameMetadata Metadata() const = 0;
 
+  // TODO(https://crbug.com/webrtc/14709): Make pure virtual when Chromium MOCK
+  // has implemented this.
+  virtual void SetMetadata(const VideoFrameMetadata&) {}
   virtual const VideoFrameMetadata& GetMetadata() const = 0;
 
   virtual const RTPVideoHeader& header () const = 0;
@@ -75,6 +77,8 @@ class TransformableAudioFrameInterface : public TransformableFrameInterface {
   // information in the header as needed, for example to compile the list of
   // csrcs.
   virtual const RTPHeader& GetHeader() const = 0;
+
+  virtual rtc::ArrayView<const uint32_t> GetContributingSources() const = 0;
 };
 
 // Objects implement this interface to be notified with the transformed frame.

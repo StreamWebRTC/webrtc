@@ -20,10 +20,10 @@
 #include "absl/strings/string_view.h"
 #include "absl/types/optional.h"
 #include "api/field_trials_view.h"
+#include "api/task_queue/pending_task_safety_flag.h"
 #include "rtc_base/network_monitor.h"
 #include "rtc_base/network_monitor_factory.h"
 #include "rtc_base/string_utils.h"
-#include "rtc_base/task_utils/pending_task_safety_flag.h"
 #include "rtc_base/thread.h"
 #include "rtc_base/thread_annotations.h"
 #include "sdk/android/src/jni/jni_helpers.h"
@@ -115,13 +115,15 @@ class AndroidNetworkMonitor : public rtc::NetworkMonitorInterface {
                                  jint preference);
 
   // Visible for testing.
+  void OnNetworkConnected_n(const NetworkInformation& network_info);
+
+  // Visible for testing.
   absl::optional<NetworkHandle> FindNetworkHandleFromAddressOrName(
       const rtc::IPAddress& address,
       absl::string_view ifname) const;
 
  private:
   void reset();
-  void OnNetworkConnected_n(const NetworkInformation& network_info);
   void OnNetworkDisconnected_n(NetworkHandle network_handle);
   void OnNetworkPreference_n(NetworkType type,
                              rtc::NetworkPreference preference);

@@ -11,6 +11,7 @@
 
 #include <string>
 
+#include "modules/portal/xdg_desktop_portal_utils.h"
 #include "rtc_base/logging.h"
 
 namespace webrtc {
@@ -67,18 +68,26 @@ void ScreenCapturePortalInterface::RegisterSessionClosedSignalHandler(
     GDBusConnection* connection,
     std::string& session_handle,
     guint& session_closed_signal_id) {
-  uint32_t portal_response;
+  uint32_t portal_response = 2;
   Scoped<GVariant> response_data;
   g_variant_get(parameters, /*format_string=*/"(u@a{sv})", &portal_response,
                 response_data.receive());
+
+  if (RequestResponseFromPortalResponse(portal_response) !=
+      RequestResponse::kSuccess) {
+    RTC_LOG(LS_ERROR) << "Failed to request the session subscription.";
+    OnPortalDone(RequestResponse::kError);
+    return;
+  }
+
   Scoped<GVariant> g_session_handle(
       g_variant_lookup_value(response_data.get(), /*key=*/"session_handle",
                              /*expected_type=*/nullptr));
-  session_handle = g_variant_dup_string(
+  session_handle = g_variant_get_string(
       /*value=*/g_session_handle.get(), /*length=*/nullptr);
 
-  if (session_handle.empty() || portal_response) {
-    RTC_LOG(LS_ERROR) << "Failed to request the session subscription.";
+  if (session_handle.empty()) {
+    RTC_LOG(LS_ERROR) << "Could not get session handle despite valid response";
     OnPortalDone(RequestResponse::kError);
     return;
   }

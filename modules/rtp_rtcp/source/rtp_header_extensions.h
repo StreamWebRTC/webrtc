@@ -13,6 +13,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -20,6 +21,7 @@
 #include "api/array_view.h"
 #include "api/rtp_headers.h"
 #include "api/rtp_parameters.h"
+#include "api/units/timestamp.h"
 #include "api/video/color_space.h"
 #include "api/video/video_content_type.h"
 #include "api/video/video_rotation.h"
@@ -41,8 +43,17 @@ class AbsoluteSendTime {
   static size_t ValueSize(uint32_t time_24bits) { return kValueSizeBytes; }
   static bool Write(rtc::ArrayView<uint8_t> data, uint32_t time_24bits);
 
-  static constexpr uint32_t MsTo24Bits(int64_t time_ms) {
-    return static_cast<uint32_t>(((time_ms << 18) + 500) / 1000) & 0x00FFFFFF;
+  static constexpr uint32_t To24Bits(Timestamp time) {
+    int64_t time_us = time.us() % (int64_t{1 << 6} * 1'000'000);
+    int64_t time6x18 = (time_us << 18) / 1'000'000;
+    RTC_DCHECK_GE(time6x18, 0);
+    RTC_DCHECK_LT(time6x18, 1 << 24);
+    return static_cast<uint32_t>(time6x18);
+  }
+
+  static constexpr Timestamp ToTimestamp(uint32_t time_24bits) {
+    RTC_DCHECK_LT(time_24bits, (1 << 24));
+    return Timestamp::Micros((time_24bits* int64_t{1'000'000}) >> 18);
   }
 };
 
