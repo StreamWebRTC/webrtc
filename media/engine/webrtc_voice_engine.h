@@ -145,6 +145,8 @@ class WebRtcVoiceEngine final : public VoiceEngineInterface {
 
   absl::optional<webrtc::AudioDeviceModule::Stats> GetAudioDeviceStats()
       override;
+  // Moved to public so WebRtcVoiceMediaChannel can access it.
+  webrtc::AudioState* audio_state();
 
  private:
   // Every option that is "set" will be applied. Every option not "set" will be
@@ -157,7 +159,6 @@ class WebRtcVoiceEngine final : public VoiceEngineInterface {
 
   webrtc::AudioDeviceModule* adm();
   webrtc::AudioProcessing* apm() const;
-  webrtc::AudioState* audio_state();
 
   std::vector<AudioCodec> CollectCodecs(
       const std::vector<webrtc::AudioCodecSpec>& specs) const;

@@ -1161,6 +1161,14 @@ public class PeerConnection {
     nativeNewGetStats(callback);
   }
 
+  public void getStats(RTCStatsCollectorCallback callback, RtpSender sender) {
+    nativeNewGetStatsForSender(callback, sender.getNativeRtpSender());
+  }
+
+  public void getStats(RTCStatsCollectorCallback callback, RtpReceiver receiver) {
+    nativeNewGetStatsForReceiver(callback, receiver.getNativeRtpReceiver());
+  }
+
   /**
    * Gets stats using the new stats collection API, see webrtc/api/stats/. These
    * will replace old stats collection API when the new API has matured enough.
@@ -1313,6 +1321,10 @@ public class PeerConnection {
   private native void nativeNewGetStats(RTCStatsCollectorCallback callback);
   private native void nativeNewGetStatsSender(long sender, RTCStatsCollectorCallback callback);
   private native void nativeNewGetStatsReceiver(long receiver, RTCStatsCollectorCallback callback);
+  private native void nativeNewGetStatsForSender(
+      RTCStatsCollectorCallback callback, long nativeRtpSender);
+  private native void nativeNewGetStatsForReceiver(
+      RTCStatsCollectorCallback callback, long nativeRtpReceiver);
   private native RtpSender nativeCreateSender(String kind, String stream_id);
   private native List<RtpSender> nativeGetSenders();
   private native List<RtpReceiver> nativeGetReceivers();

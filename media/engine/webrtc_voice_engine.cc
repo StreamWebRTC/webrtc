@@ -2502,6 +2502,132 @@ bool WebRtcVoiceReceiveChannel::MaybeCreateDefaultReceiveStream(
 
 bool WebRtcVoiceReceiveChannel::GetStats(VoiceMediaReceiveInfo* info,
                                          bool get_and_clear_legacy_stats) {
+void WebRtcVoiceMediaChannel::OnPacketSent(const rtc::SentPacket& sent_packet) {
+  RTC_DCHECK_RUN_ON(&network_thread_checker_);
+  // TODO(tommi): We shouldn't need to go through call_ to deliver this
+  // notification. We should already have direct access to
+  // video_send_delay_stats_ and transport_send_ptr_ via `stream_`.
+  // So we should be able to remove OnSentPacket from Call and handle this per
+  // channel instead. At the moment Call::OnSentPacket calls OnSentPacket for
+  // the video stats, which we should be able to skip.
+  call_->OnSentPacket(sent_packet);
+}
+
+void WebRtcVoiceMediaChannel::OnNetworkRouteChanged(
+    absl::string_view transport_name,
+    const rtc::NetworkRoute& network_route) {
+  RTC_DCHECK_RUN_ON(&network_thread_checker_);
+
+  call_->OnAudioTransportOverheadChanged(network_route.packet_overhead);
+
+  worker_thread_->PostTask(SafeTask(
+      task_safety_.flag(),
+      [this, name = std::string(transport_name), route = network_route] {
+        RTC_DCHECK_RUN_ON(worker_thread_);
+        call_->GetTransportControllerSend()->OnNetworkRouteChanged(name, route);
+      }));
+}
+
+bool WebRtcVoiceMediaChannel::MuteStream(uint32_t ssrc, bool muted) {
+  RTC_DCHECK_RUN_ON(worker_thread_);
+  const auto it = send_streams_.find(ssrc);
+  if (it == send_streams_.end()) {
+    RTC_LOG(LS_WARNING) << "The specified ssrc " << ssrc << " is not in use.";
+    return false;
+  }
+  it->second->SetMuted(muted);
+
+  // TODO(solenberg):
+  // We set the AGC to mute state only when all the channels are muted.
+  // This implementation is not ideal, instead we should signal the AGC when
+  // the mic channel is muted/unmuted. We can't do it today because there
+  // is no good way to know which stream is mapping to the mic channel.
+  bool all_muted = muted;
+  for (const auto& kv : send_streams_) {
+    all_muted = all_muted && kv.second->muted();
+  }
+  webrtc::AudioProcessing* ap = engine()->apm();
+  if (ap) {
+    ap->set_output_will_be_muted(all_muted);
+  }
+
+  // Notfy the AudioState that the mute state has updated.
+  engine_->audio_state()->OnMuteStreamChanged();
+
+  return true;
+}
+
+bool WebRtcVoiceMediaChannel::SetMaxSendBitrate(int bps) {
+  RTC_LOG(LS_INFO) << "WebRtcVoiceMediaChannel::SetMaxSendBitrate.";
+  max_send_bitrate_bps_ = bps;
+  bool success = true;
+  for (const auto& kv : send_streams_) {
+    if (!kv.second->SetMaxSendBitrate(max_send_bitrate_bps_)) {
+      success = false;
+    }
+  }
+  return success;
+}
+
+void WebRtcVoiceMediaChannel::OnReadyToSend(bool ready) {
+  RTC_DCHECK_RUN_ON(&network_thread_checker_);
+  RTC_LOG(LS_VERBOSE) << "OnReadyToSend: " << (ready ? "Ready." : "Not ready.");
+  call_->SignalChannelNetworkState(
+      webrtc::MediaType::AUDIO,
+      ready ? webrtc::kNetworkUp : webrtc::kNetworkDown);
+}
+
+bool WebRtcVoiceMediaChannel::GetSendStats(VoiceMediaSendInfo* info) {
+  TRACE_EVENT0("webrtc", "WebRtcVoiceMediaChannel::GetSendStats");
+  RTC_DCHECK_RUN_ON(worker_thread_);
+  RTC_DCHECK(info);
+
+  // Get SSRC and stats for each sender.
+  // With separate send and receive channels, we expect GetStats to be called on
+  // both, and accumulate info, but only one channel (the send one) should have
+  // senders.
+  RTC_DCHECK(info->senders.size() == 0U || send_streams_.size() == 0);
+  for (const auto& stream : send_streams_) {
+    webrtc::AudioSendStream::Stats stats =
+        stream.second->GetStats(recv_streams_.size() > 0);
+    VoiceSenderInfo sinfo;
+    sinfo.add_ssrc(stats.local_ssrc);
+    sinfo.payload_bytes_sent = stats.payload_bytes_sent;
+    sinfo.header_and_padding_bytes_sent = stats.header_and_padding_bytes_sent;
+    sinfo.retransmitted_bytes_sent = stats.retransmitted_bytes_sent;
+    sinfo.packets_sent = stats.packets_sent;
+    sinfo.total_packet_send_delay = stats.total_packet_send_delay;
+    sinfo.retransmitted_packets_sent = stats.retransmitted_packets_sent;
+    sinfo.packets_lost = stats.packets_lost;
+    sinfo.fraction_lost = stats.fraction_lost;
+    sinfo.nacks_received = stats.nacks_received;
+    sinfo.target_bitrate = stats.target_bitrate_bps;
+    sinfo.codec_name = stats.codec_name;
+    sinfo.codec_payload_type = stats.codec_payload_type;
+    sinfo.jitter_ms = stats.jitter_ms;
+    sinfo.rtt_ms = stats.rtt_ms;
+    sinfo.audio_level = stats.audio_level;
+    sinfo.total_input_energy = stats.total_input_energy;
+    sinfo.total_input_duration = stats.total_input_duration;
+    sinfo.ana_statistics = stats.ana_statistics;
+    sinfo.apm_statistics = stats.apm_statistics;
+    sinfo.report_block_datas = std::move(stats.report_block_datas);
+
+    auto encodings = stream.second->rtp_parameters().encodings;
+    if (!encodings.empty()) {
+      sinfo.active = encodings[0].active;
+    }
+
+    info->senders.push_back(sinfo);
+  }
+
+  FillSendCodecStats(info);
+
+  return true;
+}
+
+bool WebRtcVoiceMediaChannel::GetReceiveStats(VoiceMediaReceiveInfo* info,
+                                              bool get_and_clear_legacy_stats) {
   TRACE_EVENT0("webrtc", "WebRtcVoiceMediaChannel::GetReceiveStats");
   RTC_DCHECK_RUN_ON(worker_thread_);
   RTC_DCHECK(info);
