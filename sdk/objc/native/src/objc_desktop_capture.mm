@@ -14,6 +14,8 @@
  * limitations under the License.
  */
 
+#include "api/sequence_checker.h"
+#include "rtc_base/checks.h"
 #include "sdk/objc/native/src/objc_desktop_capture.h"
 #include "sdk/objc/native/src/objc_video_frame.h"
 #include "third_party/libyuv/include/libyuv.h"
@@ -35,7 +37,7 @@ ObjCDesktopCapturer::ObjCDesktopCapturer(DesktopType type,
   options_ = webrtc::DesktopCaptureOptions::CreateDefault();
   options_.set_detect_updated_region(true);
   options_.set_allow_iosurface(true);
-  thread_->Invoke<void>(RTC_FROM_HERE, [this, type] {
+  thread_->BlockingCall([this, type] {
     if (type == kScreen) {
       capturer_ = std::make_unique<DesktopAndCursorComposer>(
           webrtc::DesktopCapturer::CreateScreenCapturer(options_), options_);
@@ -47,11 +49,17 @@ ObjCDesktopCapturer::ObjCDesktopCapturer(DesktopType type,
 }
 
 ObjCDesktopCapturer::~ObjCDesktopCapturer() {
-  thread_->Invoke<void>(RTC_FROM_HERE, [this] { capturer_.reset(); });
+  thread_->BlockingCall([this] {
+    capturer_.reset();
+  });
 }
 
 ObjCDesktopCapturer::CaptureState ObjCDesktopCapturer::Start(uint32_t fps) {
-  if (fps == 0) {
+  if(capture_state_  == CS_RUNNING) {
+    return capture_state_;
+  }
+
+  if(fps == 0) {
     capture_state_ = CS_FAILED;
     return capture_state_;
   }
@@ -75,9 +83,15 @@ ObjCDesktopCapturer::CaptureState ObjCDesktopCapturer::Start(uint32_t fps) {
     }
   }
 
-  thread_->Invoke<void>(RTC_FROM_HERE, [this] { capturer_->Start(this); });
+  thread_->BlockingCall([this] {
+    capturer_->Start(this);
+  });
   capture_state_ = CS_RUNNING;
-  thread_->PostTask(ToQueuedTask([this] { CaptureFrame(); }));
+
+  thread_->PostTask([this] {
+    CaptureFrame();
+  });
+
   [delegate_ didSourceCaptureStart];
   return capture_state_;
 }
@@ -172,21 +186,19 @@ void ObjCDesktopCapturer::OnCaptureResult(webrtc::DesktopCapturer::Result result
       [[RTC_OBJC_TYPE(RTCVideoFrame) alloc] initWithBuffer:rtcPixelBuffer
                                                   rotation:RTCVideoRotation_0
                                                timeStampNs:timeStampNs];
-
   CVPixelBufferRelease(pixelBuffer);
   [delegate_ didCaptureVideoFrame:videoFrame];
 }
 
-void ObjCDesktopCapturer::OnMessage(rtc::Message *msg) {
-  if (msg->message_id == kCaptureMessageId) {
-    CaptureFrame();
-  }
-}
-
 void ObjCDesktopCapturer::CaptureFrame() {
+  RTC_DCHECK_RUN_ON(thread_.get());
   if (capture_state_ == CS_RUNNING) {
     capturer_->CaptureFrame();
-    thread_->PostDelayed(RTC_FROM_HERE, capture_delay_, this, kCaptureMessageId);
+    thread_->PostDelayedHighPrecisionTask(
+      [this]() {
+        CaptureFrame();
+      },
+      TimeDelta::Millis(capture_delay_));
   }
 }
 

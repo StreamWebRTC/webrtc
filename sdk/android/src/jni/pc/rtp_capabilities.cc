@@ -23,14 +23,13 @@ namespace {
 ScopedJavaLocalRef<jobject> NativeToJavaRtpCodecParameter(
     JNIEnv* env,
     const RtpCodecCapability& codec) {
-  return Java_CodecCapability_Constructor(
-      env, codec.preferred_payload_type.value(),
-      NativeToJavaString(env, codec.name),
-      NativeToJavaMediaType(env, codec.kind),
-      NativeToJavaInteger(env, codec.clock_rate),
-      NativeToJavaInteger(env, codec.num_channels),
-      NativeToJavaString(env, codec.mime_type()),
-      NativeToJavaStringMap(env, codec.parameters));
+  return Java_CodecCapability_Constructor(env, codec.preferred_payload_type.value(),
+                                NativeToJavaString(env, codec.name),
+                                NativeToJavaMediaType(env, codec.kind),
+                                NativeToJavaInteger(env, codec.clock_rate),
+                                NativeToJavaInteger(env, codec.num_channels),
+                                NativeToJavaString(env, codec.mime_type()),
+                                NativeToJavaStringMap(env, codec.parameters));
 }
 
 ScopedJavaLocalRef<jobject> NativeToJavaRtpHeaderExtensionParameter(

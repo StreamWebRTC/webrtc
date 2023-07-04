@@ -452,6 +452,104 @@ class WebRtcVideoSendChannel : public MediaChannelUtil,
     const bool disable_automatic_resize_;
   };
 
+  // Wrapper for the receiver part, contains configs etc. that are needed to
+  // reconstruct the underlying VideoReceiveStreamInterface.
+  class WebRtcVideoReceiveStream
+      : public rtc::VideoSinkInterface<webrtc::VideoFrame> {
+   public:
+    WebRtcVideoReceiveStream(
+        webrtc::Call* call,
+        const StreamParams& sp,
+        webrtc::VideoReceiveStreamInterface::Config config,
+        bool default_stream,
+        const std::vector<VideoCodecSettings>& recv_codecs,
+        const webrtc::FlexfecReceiveStream::Config& flexfec_config);
+    ~WebRtcVideoReceiveStream();
+
+    webrtc::VideoReceiveStreamInterface& stream();
+    // Return value may be nullptr.
+    webrtc::FlexfecReceiveStream* flexfec_stream();
+
+    const std::vector<uint32_t>& GetSsrcs() const;
+
+    std::vector<webrtc::RtpSource> GetSources();
+
+    // Does not return codecs, nor header extensions,  they are filled by the
+    // owning WebRtcVideoChannel.
+    webrtc::RtpParameters GetRtpParameters() const;
+
+    // TODO(deadbeef): Move these feedback parameters into the recv parameters.
+    void SetFeedbackParameters(bool lntf_enabled,
+                               bool nack_enabled,
+                               webrtc::RtcpMode rtcp_mode,
+                               absl::optional<int> rtx_time);
+    void SetRecvParameters(const ChangedRecvParameters& recv_params);
+
+    void OnFrame(const webrtc::VideoFrame& frame) override;
+    bool IsDefaultStream() const;
+
+    void SetFrameDecryptor(
+        rtc::scoped_refptr<webrtc::FrameDecryptorInterface> frame_decryptor);
+
+    bool SetBaseMinimumPlayoutDelayMs(int delay_ms);
+
+    int GetBaseMinimumPlayoutDelayMs() const;
+
+    void SetSink(rtc::VideoSinkInterface<webrtc::VideoFrame>* sink);
+
+    VideoReceiverInfo GetVideoReceiverInfo(bool log_stats);
+
+    void SetRecordableEncodedFrameCallback(
+        std::function<void(const webrtc::RecordableEncodedFrame&)> callback);
+    void ClearRecordableEncodedFrameCallback();
+    void GenerateKeyFrame();
+
+    void SetDepacketizerToDecoderFrameTransformer(
+        rtc::scoped_refptr<webrtc::FrameTransformerInterface>
+            frame_transformer);
+    
+    void StartStream();
+    void StopStream();
+
+    void SetLocalSsrc(uint32_t local_ssrc);
+    void UpdateRtxSsrc(uint32_t ssrc);
+
+   private:
+    // Attempts to reconfigure an already existing `flexfec_stream_`, create
+    // one if the configuration is now complete or remove a flexfec stream
+    // when disabled.
+    void SetFlexFecPayload(int payload_type);
+
+    void RecreateReceiveStream();
+    void CreateReceiveStream();
+    void StartReceiveStream();
+
+    // Applies a new receive codecs configration to `config_`. Returns true
+    // if the internal stream needs to be reconstructed, or false if no changes
+    // were applied.
+    bool ReconfigureCodecs(const std::vector<VideoCodecSettings>& recv_codecs);
+
+    webrtc::Call* const call_;
+    const StreamParams stream_params_;
+
+    // Both `stream_` and `flexfec_stream_` are managed by `this`. They are
+    // destroyed by calling call_->DestroyVideoReceiveStream and
+    // call_->DestroyFlexfecReceiveStream, respectively.
+    webrtc::VideoReceiveStreamInterface* stream_;
+    const bool default_stream_;
+    webrtc::VideoReceiveStreamInterface::Config config_;
+    webrtc::FlexfecReceiveStream::Config flexfec_config_;
+    webrtc::FlexfecReceiveStream* flexfec_stream_;
+
+    webrtc::Mutex sink_lock_;
+    rtc::VideoSinkInterface<webrtc::VideoFrame>* sink_
+        RTC_GUARDED_BY(sink_lock_);
+    int64_t first_frame_timestamp_ RTC_GUARDED_BY(sink_lock_);
+    // Start NTP time is estimated as current remote NTP time (estimated from
+    // RTCP) minus the elapsed time, as soon as remote NTP time is available.
+    int64_t estimated_remote_start_ntp_time_ms_ RTC_GUARDED_BY(sink_lock_);
+  };
+
   void Construct(webrtc::Call* call, WebRtcVideoEngine* engine);
 
   bool SendRtp(const uint8_t* data,

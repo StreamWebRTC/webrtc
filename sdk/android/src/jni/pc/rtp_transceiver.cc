@@ -147,8 +147,7 @@ void JNI_RtpTransceiver_SetCodecPreferences(
   std::vector<RtpCodecCapability> codecs =
       JavaListToNativeVector<RtpCodecCapability, jobject>(
           jni, j_codecs, &JavaToNativeRtpCodecCapability);
-  reinterpret_cast<RtpTransceiverInterface*>(j_rtp_transceiver_pointer)
-      ->SetCodecPreferences(codecs);
+  reinterpret_cast<RtpTransceiverInterface*>(j_rtp_transceiver_pointer)->SetCodecPreferences(codecs);
 }
 
 void JNI_RtpTransceiver_StopInternal(JNIEnv* jni,

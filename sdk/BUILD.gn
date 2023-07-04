@@ -930,6 +930,22 @@ if (is_ios || is_mac) {
       ]
     }
 
+    rtc_library("simulcast") {
+      sources = [
+        "objc/components/video_codec/RTCVideoEncoderFactorySimulcast.h",
+        "objc/components/video_codec/RTCVideoEncoderFactorySimulcast.mm",
+        "objc/api/video_codec/RTCVideoEncoderSimulcast.h",
+        "objc/api/video_codec/RTCVideoEncoderSimulcast.mm",
+      ]
+
+      deps = [
+        ":base_objc",
+        ":wrapped_native_codec_objc",
+        "../media:rtc_media_base",
+        "../media:rtc_simulcast_encoder_adapter",
+      ]
+    }
+  
     rtc_library("mediaconstraints_objc") {
       configs += [ "..:no_global_constructors" ]
       sources = [
@@ -1176,6 +1192,7 @@ if (is_ios || is_mac) {
         ":videorendereradapter_objc",
         ":videosource_objc",
         ":videotoolbox_objc",
+        "../api/crypto:frame_crypto_transformer",
         "../api:dtmf_sender_interface",
         "../api/crypto:frame_crypto_transformer",
         "../api:libjingle_peerconnection_api",

@@ -401,20 +401,15 @@ ScopedJavaLocalRef<jobject> JNI_PeerConnectionFactory_GetRtpSenderCapabilities(
     jlong native_factory,
     const JavaParamRef<jobject>& media_type) {
   auto factory = PeerConnectionFactoryFromJava(native_factory);
-  return NativeToJavaRtpCapabilities(
-      jni, factory->GetRtpSenderCapabilities(
-               JavaToNativeMediaType(jni, media_type)));
+  return NativeToJavaRtpCapabilities(jni, factory->GetRtpSenderCapabilities(JavaToNativeMediaType(jni, media_type)));
 }
 
-ScopedJavaLocalRef<jobject>
-JNI_PeerConnectionFactory_GetRtpReceiverCapabilities(
+ScopedJavaLocalRef<jobject> JNI_PeerConnectionFactory_GetRtpReceiverCapabilities(
     JNIEnv* jni,
     jlong native_factory,
     const JavaParamRef<jobject>& media_type) {
   auto factory = PeerConnectionFactoryFromJava(native_factory);
-  return NativeToJavaRtpCapabilities(
-      jni, factory->GetRtpReceiverCapabilities(
-               JavaToNativeMediaType(jni, media_type)));
+  return NativeToJavaRtpCapabilities(jni, factory->GetRtpReceiverCapabilities(JavaToNativeMediaType(jni, media_type)));
 }
 
 static jboolean JNI_PeerConnectionFactory_StartAecDump(

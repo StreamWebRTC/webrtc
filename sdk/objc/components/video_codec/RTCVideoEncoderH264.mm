@@ -650,7 +650,8 @@ NSUInteger GetMaxSampleRate(const webrtc::H264ProfileLevelId &profile_level_id) 
     CVPixelBufferPoolRef pixelBufferPool =
         VTCompressionSessionGetPixelBufferPool(_compressionSession);
     if (!pixelBufferPool) {
-      return NO;
+      [self resetCompressionSessionWithPixelFormat:framePixelFormat];
+      return YES;
     }
 
     NSDictionary *poolAttributes =
@@ -925,3 +926,4 @@ NSUInteger GetMaxSampleRate(const webrtc::H264ProfileLevelId &profile_level_id) 
 }
 
 @end
+

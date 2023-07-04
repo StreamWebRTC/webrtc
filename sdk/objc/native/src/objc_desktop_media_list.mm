@@ -44,8 +44,8 @@ ObjCDesktopMediaList::ObjCDesktopMediaList(DesktopType type,
 
   callback_ = std::make_unique<CallbackProxy>();
 
-  thread_->Invoke<void>(RTC_FROM_HERE, [this, type] {
-    if (type == kScreen) {
+  thread_->BlockingCall([this, type] {
+     if (type == kScreen) {
       capturer_ = webrtc::DesktopCapturer::CreateScreenCapturer(options_);
     } else {
       capturer_ = webrtc::DesktopCapturer::CreateWindowCapturer(options_);
@@ -55,7 +55,9 @@ ObjCDesktopMediaList::ObjCDesktopMediaList(DesktopType type,
 }
 
 ObjCDesktopMediaList::~ObjCDesktopMediaList() {
-  thread_->Invoke<void>(RTC_FROM_HERE, [this] { capturer_.reset(); });
+  thread_->BlockingCall([this] {
+    capturer_.reset();
+  });
 }
 
 int32_t ObjCDesktopMediaList::UpdateSourceList(bool force_reload, bool get_thumbnail) {
@@ -68,8 +70,9 @@ int32_t ObjCDesktopMediaList::UpdateSourceList(bool force_reload, bool get_thumb
 
   webrtc::DesktopCapturer::SourceList new_sources;
 
-  thread_->Invoke<void>(RTC_FROM_HERE,
-                        [this, &new_sources] { capturer_->GetSourceList(&new_sources); });
+  thread_->BlockingCall([this, &new_sources] {
+    capturer_->GetSourceList(&new_sources);
+  });
 
   typedef std::set<DesktopCapturer::SourceId> SourceSet;
   SourceSet new_source_set;
@@ -140,19 +143,19 @@ int32_t ObjCDesktopMediaList::UpdateSourceList(bool force_reload, bool get_thumb
 }
 
 bool ObjCDesktopMediaList::GetThumbnail(MediaSource *source, bool notify) {
-  thread_->PostTask(ToQueuedTask([this, source, notify] {
-    if (capturer_->SelectSource(source->id())) {
-      callback_->SetCallback(
-          [&](webrtc::DesktopCapturer::Result result, std::unique_ptr<webrtc::DesktopFrame> frame) {
-            auto old_thumbnail = source->thumbnail();
-            source->SaveCaptureResult(result, std::move(frame));
-            if (old_thumbnail.size() != source->thumbnail().size() && notify) {
-              [objcMediaList_ mediaSourceThumbnailChanged:source];
-            }
-          });
-      capturer_->CaptureFrame();
-    }
-  }));
+  thread_->PostTask([this, source, notify] {
+      if(capturer_->SelectSource(source->id())){
+        callback_->SetCallback([&](webrtc::DesktopCapturer::Result result,
+                             std::unique_ptr<webrtc::DesktopFrame> frame) {
+          auto old_thumbnail = source->thumbnail();
+          source->SaveCaptureResult(result, std::move(frame));
+          if(old_thumbnail.size() != source->thumbnail().size() && notify) {
+            [objcMediaList_ mediaSourceThumbnailChanged:source];
+          }
+        });
+        capturer_->CaptureFrame();
+      }
+  });
 
   return true;
 }

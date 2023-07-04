@@ -86,6 +86,8 @@ class TransformableVideoSenderFrame : public TransformableVideoFrameInterface {
 
   const VideoFrameMetadata& GetMetadata() const override { return metadata_; }
 
+  const RTPVideoHeader& header() const override { return header_; }
+
   const RTPVideoHeader& GetHeader() const { return header_; }
   uint8_t GetPayloadType() const override { return payload_type_; }
   absl::optional<VideoCodecType> GetCodecType() const { return codec_type_; }

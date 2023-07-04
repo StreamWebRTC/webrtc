@@ -70,6 +70,10 @@ class TransformableVideoReceiverFrame
         << "TransformableVideoReceiverFrame::SetMetadata is not implemented";
   }
 
+  const RTPVideoHeader& header () const override {
+    return frame_->GetRtpVideoHeader();
+  }
+
   std::unique_ptr<RtpFrameObject> ExtractFrame() && {
     return std::move(frame_);
   }

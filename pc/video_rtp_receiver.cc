@@ -125,8 +125,7 @@ void VideoRtpReceiver::OnChanged() {
   RTC_DCHECK_RUN_ON(&signaling_thread_checker_);
   if (cached_track_should_receive_ != track_->should_receive()) {
     cached_track_should_receive_ = track_->should_receive();
-    worker_thread_->PostTask(ToQueuedTask(
-        worker_thread_safety_,
+    worker_thread_->PostTask(
         [this, receive = cached_track_should_receive_]() {
           RTC_DCHECK_RUN_ON(worker_thread_);
           if(receive) {
@@ -134,7 +133,7 @@ void VideoRtpReceiver::OnChanged() {
           } else {
             StopMediaChannel();
           }
-        }));
+        });
   }
 }
 
@@ -143,7 +142,7 @@ void VideoRtpReceiver::StartMediaChannel() {
   if (!media_channel_) {
     return;
   }
-  media_channel_->StartReceive(ssrc_.value_or(0));
+  media_channel_->StartReceive(signaled_ssrc_.value_or(0));
   OnGenerateKeyFrame();
 }
 
@@ -152,10 +151,9 @@ void VideoRtpReceiver::StopMediaChannel() {
   if (!media_channel_) {
     return;
   }
-  media_channel_->StopReceive(ssrc_.value_or(0));
+  media_channel_->StopReceive(signaled_ssrc_.value_or(0));
 }
 
-// RTC_RUN_ON(&signaling_thread_checker_)
 void VideoRtpReceiver::RestartMediaChannel(absl::optional<uint32_t> ssrc) {
   RTC_DCHECK_RUN_ON(&signaling_thread_checker_);
   MediaSourceInterface::SourceState state = source_->state();
