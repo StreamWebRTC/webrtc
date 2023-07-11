@@ -611,7 +611,52 @@ class HardwareVideoEncoder implements VideoEncoder {
           configBuffer = ByteBuffer.allocateDirect(info.size);
           configBuffer.put(outputBuffer);
         }
-        return;
+
+        final boolean isKeyFrame = (info.flags & MediaCodec.BUFFER_FLAG_SYNC_FRAME) != 0;
+        if (isKeyFrame) {
+          Logging.d(TAG, "Sync frame generated");
+        }
+
+        final ByteBuffer frameBuffer;
+        if (isKeyFrame && (codecType == VideoCodecMimeType.H264 || codecType == VideoCodecMimeType.H265)) {
+          Logging.d(TAG,
+              "Prepending config frame of size " + configBuffer.capacity()
+                  + " to output buffer with offset " + info.offset + ", size " + info.size);
+          // For H.264 key frame prepend SPS and PPS NALs at the start.
+          frameBuffer = ByteBuffer.allocateDirect(info.size + configBuffer.capacity());
+          configBuffer.rewind();
+          frameBuffer.put(configBuffer);
+          frameBuffer.put(codecOutputBuffer);
+          frameBuffer.rewind();
+        } else {
+          frameBuffer = codecOutputBuffer.slice();
+        }
+
+        final EncodedImage.FrameType frameType = isKeyFrame
+            ? EncodedImage.FrameType.VideoFrameKey
+            : EncodedImage.FrameType.VideoFrameDelta;
+
+        outputBuffersBusyCount.increment();
+        EncodedImage.Builder builder = outputBuilders.poll();
+        EncodedImage encodedImage = builder
+                                        .setBuffer(frameBuffer,
+                                            () -> {
+                                              // This callback should not throw any exceptions since
+                                              // it may be called on an arbitrary thread.
+                                              // Check bug webrtc:11230 for more details.
+                                              try {
+                                                codec.releaseOutputBuffer(index, false);
+                                              } catch (Exception e) {
+                                                Logging.e(TAG, "releaseOutputBuffer failed", e);
+                                              }
+                                              outputBuffersBusyCount.decrement();
+                                            })
+                                        .setFrameType(frameType)
+                                        .createEncodedImage();
+        // TODO(mellem):  Set codec-specific info.
+        callback.onEncodedFrame(encodedImage, new CodecSpecificInfo());
+        // Note that the callback may have retained the image.
+        encodedImage.release();
       }
 
       bitrateAdjuster.reportEncodedFrame(info.size);
